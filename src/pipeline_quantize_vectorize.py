@@ -64,6 +64,11 @@ def quantize_levels(gray: np.ndarray, levels: int = 6) -> np.ndarray:
     if levels < 2:
         raise ValueError("levels must be >= 2")
     gray_u8 = np.asarray(gray, dtype=np.uint8)
+    gray_min = int(np.min(gray_u8))
+    gray_max = int(np.max(gray_u8))
+    if gray_max > gray_min:
+        stretched = (gray_u8.astype(np.float32) - float(gray_min)) * (255.0 / float(gray_max - gray_min))
+        gray_u8 = np.clip(np.rint(stretched), 0.0, 255.0).astype(np.uint8)
     bins = np.linspace(0, 256, levels + 1, dtype=np.int32)
     quantized = np.digitize(gray_u8, bins[1:-1], right=False).astype(np.uint8)
     return quantized
@@ -248,6 +253,26 @@ def _choose_top_tube_shapes(shapes: list[ShapeRecord], count: int) -> list[Shape
     return sorted_shapes[: max(1, min(len(sorted_shapes), int(count)))]
 
 
+def _filter_tube_candidate_shapes(
+    shapes: list[ShapeRecord],
+    width: int,
+    height: int,
+    max_bbox_ratio: float = 0.72,
+    max_points: int = 4000,
+) -> list[ShapeRecord]:
+    if not shapes:
+        return []
+    canvas_area = float(max(1, width * height))
+    bbox_limit = canvas_area * max(0.05, min(0.98, float(max_bbox_ratio)))
+    point_limit = max(32, int(max_points))
+    filtered = [
+        shape
+        for shape in shapes
+        if _shape_bbox_area(shape) <= bbox_limit and int(shape["contour"].shape[0]) <= point_limit
+    ]
+    return filtered if filtered else list(shapes)
+
+
 def _piece_to_svg_path_data(piece_mask, simplify_eps: float) -> str:
     commands: list[str] = []
     for ring in piece_rings(piece_mask, simplify_eps=max(0.0, float(simplify_eps))):
@@ -412,6 +437,49 @@ def _shape_scales_for_varied_sizes(
     return scales
 
 
+def _representative_shape_for_level(shapes: list[ShapeRecord], level: int) -> ShapeRecord | None:
+    candidates = [shape for shape in shapes if int(shape["level"]) == int(level)]
+    if not candidates:
+        return None
+    return max(candidates, key=_shape_area)
+
+
+def _required_scatter_tone_shapes(
+    shapes: list[ShapeRecord],
+    include_midtone: bool,
+) -> list[ShapeRecord]:
+    if not shapes:
+        return []
+    levels = sorted({int(shape["level"]) for shape in shapes})
+    if not levels:
+        return []
+
+    required_levels: list[int] = []
+    darkest = levels[0]
+    lightest = levels[-1]
+    required_levels.append(darkest)
+    if lightest != darkest:
+        required_levels.append(lightest)
+
+    if include_midtone and len(levels) >= 3:
+        mid_level = levels[len(levels) // 2]
+        if mid_level not in required_levels:
+            required_levels.append(mid_level)
+
+    required_shapes: list[ShapeRecord] = []
+    required_ids: set[int] = set()
+    for level in required_levels:
+        shape = _representative_shape_for_level(shapes, level)
+        if shape is None:
+            continue
+        marker = id(shape)
+        if marker in required_ids:
+            continue
+        required_ids.add(marker)
+        required_shapes.append(shape)
+    return required_shapes
+
+
 def _append_scatter_layer(
     lines: list[str],
     shapes: list[ShapeRecord],
@@ -431,7 +499,35 @@ def _append_scatter_layer(
         max_shapes=max_shapes,
         shape_count_range=shape_count_range,
     )
-    layer_shapes = _select_shapes(shapes, rng=rng, shape_limit=shape_limit)
+    required_shapes = _required_scatter_tone_shapes(
+        shapes,
+        include_midtone=(shape_limit is None or int(shape_limit) >= 3),
+    )
+    required_count = len(required_shapes)
+    effective_shape_limit: int | None
+    if shape_limit is None:
+        effective_shape_limit = None
+    else:
+        effective_shape_limit = max(int(shape_limit), required_count)
+
+    selected_shapes = _select_shapes(shapes, rng=rng, shape_limit=effective_shape_limit)
+    layer_shapes: list[ShapeRecord] = []
+    layer_shape_ids: set[int] = set()
+    for shape in required_shapes:
+        marker = id(shape)
+        if marker in layer_shape_ids:
+            continue
+        layer_shape_ids.add(marker)
+        layer_shapes.append(shape)
+    for shape in selected_shapes:
+        marker = id(shape)
+        if marker in layer_shape_ids:
+            continue
+        layer_shape_ids.add(marker)
+        layer_shapes.append(shape)
+        if effective_shape_limit is not None and len(layer_shapes) >= effective_shape_limit:
+            break
+
     layer_scales = _shape_scales_for_varied_sizes(
         layer_shapes,
         rng=rng,
@@ -475,11 +571,27 @@ def _append_segmented_tube_layer(
     tube_stroke_width: float | None = None,
     tube_straightness: float | None = None,
 ) -> None:
-    tube_shape = _choose_tube_shape(shapes, rng=rng)
+    tube_candidates = _filter_tube_candidate_shapes(shapes, width=width, height=height)
+    tube_shape = _choose_tube_shape(tube_candidates, rng=rng)
     if tube_shape is None:
         return
     contour = tube_shape["contour"]
-    path_data = contour_to_svg_path(contour)
+    perimeter = max(1.0, float(cv2.arcLength(contour, True)))
+    simplify_eps = max(0.9, perimeter * 0.0025)
+    path_data = contour_to_svg_path(
+        contour,
+        simplify_eps=simplify_eps,
+        smooth_iterations=0,
+        use_curves=True,
+    )
+    if len(path_data) > 30_000:
+        # Guardrail: extreme contours can create very large repeated tube paths.
+        path_data = contour_to_svg_path(
+            contour,
+            simplify_eps=max(2.0, simplify_eps * 1.8),
+            smooth_iterations=0,
+            use_curves=False,
+        )
     if not path_data:
         return
 
@@ -564,7 +676,8 @@ def _append_trimmed_morph_tube_layer(
         return
 
     morph_shape_count = max(1, min(16, int(4 if tube_morph_shapes is None else tube_morph_shapes)))
-    selected_shapes = _choose_top_tube_shapes(shapes, count=morph_shape_count)
+    tube_candidates = _filter_tube_candidate_shapes(shapes, width=width, height=height, max_bbox_ratio=0.78)
+    selected_shapes = _choose_top_tube_shapes(tube_candidates, count=morph_shape_count)
     if not selected_shapes:
         return
     base_contours = [shape["contour"] for shape in selected_shapes]

@@ -10,12 +10,13 @@ from time import perf_counter
 
 from PIL import Image, ImageFilter, ImageOps
 from PySide6.QtCore import QTimer, Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QFontMetrics, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QCheckBox,
     QDoubleSpinBox,
+    QFrame,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -27,10 +28,12 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSpinBox,
     QStackedWidget,
     QSplitter,
+    QToolButton,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -79,7 +82,11 @@ class ArtUiWindow(QMainWindow):
     COMPOSE_WHITE_BACKGROUND = True
     PREVIEW_DPI = 192
     EXPORT_DPI = 192
-    PREVIEW_SCALE = 2.0
+    PREVIEW_SCALE = 1.0
+    PREVIEW_MAX_DIM = 1400
+    PREVIEW_MAX_PIXELS = 1_800_000
+    GENERATE_MAX_DIM = 2600
+    GENERATE_MAX_PIXELS = 5_200_000
     CANVAS_RATIO_WIDTH = 3
     CANVAS_RATIO_HEIGHT = 4
     BACKGROUND_BLUR_RADIUS = 1.2
@@ -93,6 +100,9 @@ class ArtUiWindow(QMainWindow):
         self.source_path: Path | None = None
         self._source_preview_path: Path | None = None
         self._output_preview_path: Path | None = None
+        self._is_rendering = False
+        self._pending_live_preview = False
+        self._pending_generate = False
 
         self.load_button = QPushButton("Load Image")
         self.load_button.clicked.connect(self.on_load_image)
@@ -151,6 +161,11 @@ class ArtUiWindow(QMainWindow):
         self.layer_stack_list.setDefaultDropAction(Qt.MoveAction)
         self.layer_stack_list.setSelectionMode(QAbstractItemView.SingleSelection)
         self.layer_stack_list.setMinimumHeight(140)
+        self.layer_stack_list.setTextElideMode(Qt.ElideRight)
+        self.layer_stack_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.layer_stack_list.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.layer_stack_list.setUniformItemSizes(True)
+        self.layer_stack_list.setSpacing(2)
         self.layer_stack_list.currentItemChanged.connect(self.on_layer_selection_changed)
         self.layer_stack_list.model().rowsMoved.connect(self.on_layer_order_changed)
 
@@ -158,7 +173,11 @@ class ArtUiWindow(QMainWindow):
         self.rebuild_layers_button.clicked.connect(self.refresh_layer_stack)
 
         self.selected_layer_label = QLabel("No layer selected")
+        self.selected_layer_label.setWordWrap(True)
         self.layer_props_stack = QStackedWidget()
+        self.layer_props_toggle_button = QToolButton()
+        self.layer_props_scroll = QScrollArea()
+        self.layer_editor_panel = QWidget()
 
         self.layer_props_empty = QLabel("Select a layer to edit properties.")
         self.layer_props_empty.setAlignment(Qt.AlignCenter)
@@ -269,6 +288,37 @@ class ArtUiWindow(QMainWindow):
         self.layer_props_stack.addWidget(trimmed_tube_page)
         self.layer_props_stack.setCurrentIndex(0)
 
+        selected_layer_row = QWidget()
+        selected_layer_form = QFormLayout(selected_layer_row)
+        selected_layer_form.setContentsMargins(0, 0, 0, 0)
+        selected_layer_form.setLabelAlignment(Qt.AlignLeft | Qt.AlignTop)
+        selected_layer_form.setFormAlignment(Qt.AlignTop)
+        selected_layer_form.addRow("Selected Layer", self.selected_layer_label)
+
+        self.layer_props_toggle_button.setText("Layer Properties")
+        self.layer_props_toggle_button.setCheckable(True)
+        self.layer_props_toggle_button.setChecked(True)
+        self.layer_props_toggle_button.setArrowType(Qt.DownArrow)
+        self.layer_props_toggle_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.layer_props_toggle_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.layer_props_toggle_button.toggled.connect(self.on_layer_properties_toggle)
+
+        self.layer_props_scroll.setWidgetResizable(True)
+        self.layer_props_scroll.setFrameShape(QFrame.NoFrame)
+        self.layer_props_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.layer_props_scroll.setWidget(self.layer_props_stack)
+        self.layer_props_scroll.setMinimumHeight(120)
+        self.layer_props_scroll.setMaximumHeight(300)
+
+        layer_editor_layout = QVBoxLayout(self.layer_editor_panel)
+        layer_editor_layout.setContentsMargins(0, 0, 0, 0)
+        layer_editor_layout.setSpacing(4)
+        layer_editor_layout.addWidget(selected_layer_row)
+        layer_editor_layout.addWidget(self.layer_props_toggle_button)
+        layer_editor_layout.addWidget(self.layer_props_scroll)
+        self.on_layer_properties_toggle(True)
+        self.layer_editor_panel.setVisible(False)
+
         self.preview_timer = QTimer(self)
         self.preview_timer.setSingleShot(True)
         self.preview_timer.setInterval(220)
@@ -308,6 +358,8 @@ class ArtUiWindow(QMainWindow):
 
         controls_box = QGroupBox("Controls")
         controls_layout = QFormLayout(controls_box)
+        controls_layout.setLabelAlignment(Qt.AlignLeft | Qt.AlignTop)
+        controls_layout.setFormAlignment(Qt.AlignTop)
         controls_layout.addRow("Levels", self.levels_label)
         controls_layout.addRow("Seed", self.seed_input)
         controls_layout.addRow("", self.random_seed_checkbox)
@@ -328,8 +380,7 @@ class ArtUiWindow(QMainWindow):
         controls_layout.addRow("Trimmed Morph Layers", trimmed_tube_row)
         controls_layout.addRow("Layer Stack", self.layer_stack_list)
         controls_layout.addRow("", self.rebuild_layers_button)
-        controls_layout.addRow("Selected Layer", self.selected_layer_label)
-        controls_layout.addRow("Layer Properties", self.layer_props_stack)
+        controls_layout.addRow(self.layer_editor_panel)
         out_row = QHBoxLayout()
         out_row.addWidget(self.output_dir_edit, stretch=1)
         out_row.addWidget(self.output_pick_button)
@@ -339,18 +390,26 @@ class ArtUiWindow(QMainWindow):
         source_layout = QVBoxLayout(source_box)
         source_layout.addWidget(self.source_preview)
 
-        left_panel = QWidget()
-        left_layout = QVBoxLayout(left_panel)
+        left_content = QWidget()
+        left_layout = QVBoxLayout(left_content)
+        left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.addWidget(controls_box)
         left_layout.addWidget(source_box)
         left_layout.addStretch(1)
+
+        left_scroll = QScrollArea()
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setFrameShape(QFrame.NoFrame)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        left_scroll.setWidget(left_content)
+        left_scroll.setMinimumWidth(360)
 
         output_box = QGroupBox("Output Preview")
         output_layout = QVBoxLayout(output_box)
         output_layout.addWidget(self.output_preview, stretch=1)
 
         splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(left_panel)
+        splitter.addWidget(left_scroll)
         splitter.addWidget(output_box)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
@@ -408,6 +467,7 @@ class ArtUiWindow(QMainWindow):
             self._render_preview(self.source_preview, self._source_preview_path)
         if self._output_preview_path is not None:
             self._render_preview(self.output_preview, self._output_preview_path)
+        self._refresh_layer_stack_labels()
 
     def on_random_seed_toggled(self, checked: bool) -> None:
         self.seed_input.setEnabled(not checked)
@@ -476,12 +536,49 @@ class ArtUiWindow(QMainWindow):
             height = int(round(width / target_ratio))
         return max(1, width), max(1, height)
 
-    def _prepare_canvas_image(self, source_image: Image.Image) -> Image.Image:
+    def _limit_canvas_size(
+        self,
+        width: int,
+        height: int,
+        max_dim: int | None = None,
+        max_pixels: int | None = None,
+    ) -> tuple[int, int]:
+        w = max(1, int(width))
+        h = max(1, int(height))
+        scale = 1.0
+
+        if max_dim is not None and max_dim > 0:
+            largest = max(w, h)
+            if largest > max_dim:
+                scale = min(scale, float(max_dim) / float(largest))
+
+        if max_pixels is not None and max_pixels > 0:
+            pixels = float(w * h)
+            if pixels > float(max_pixels):
+                scale = min(scale, (float(max_pixels) / pixels) ** 0.5)
+
+        if scale < 1.0:
+            w = max(1, int(round(w * scale)))
+            h = max(1, int(round(h * scale)))
+        return w, h
+
+    def _prepare_canvas_image(
+        self,
+        source_image: Image.Image,
+        max_dim: int | None = None,
+        max_pixels: int | None = None,
+    ) -> Image.Image:
         canvas_width, canvas_height = self._canvas_size_for_source(source_image.width, source_image.height)
-        if canvas_width == source_image.width and canvas_height == source_image.height:
+        target_width, target_height = self._limit_canvas_size(
+            canvas_width,
+            canvas_height,
+            max_dim=max_dim,
+            max_pixels=max_pixels,
+        )
+        if target_width == source_image.width and target_height == source_image.height:
             return source_image.copy()
         resample = Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.LANCZOS
-        return ImageOps.fit(source_image, (canvas_width, canvas_height), method=resample, centering=(0.5, 0.5))
+        return ImageOps.fit(source_image, (target_width, target_height), method=resample, centering=(0.5, 0.5))
 
     def _build_background_image_data_url(self, canvas_image: Image.Image, blur_enabled: bool) -> str:
         background_image = canvas_image.convert("L")
@@ -547,12 +644,12 @@ class ArtUiWindow(QMainWindow):
         self.layer_stack_list.addItem(middle_scatter_item)
         self.layer_stack_list.addItem(bottom_tube_item)
         self._refresh_layer_stack_labels()
-        self.layer_stack_list.setCurrentRow(0)
+        self._clear_layer_selection()
 
     def _set_layer_item_text(self, item: QListWidgetItem, index: int) -> None:
         data = item.data(Qt.UserRole)
         if not isinstance(data, dict):
-            item.setText(f"Layer {index + 1}")
+            self._set_layer_item_display(item, f"Layer {index + 1}")
             return
         count = self.layer_stack_list.count()
         if count <= 1:
@@ -569,39 +666,61 @@ class ArtUiWindow(QMainWindow):
             max_shapes = int(data.get("scatter_shape_count_max", self.SCATTER_LAYER_DEFAULT_MAX_SHAPES))
             if min_shapes > max_shapes:
                 min_shapes, max_shapes = max_shapes, min_shapes
-            item.setText(f"{position_label}: Scatter ({min_shapes}-{max_shapes} shapes)")
+            self._set_layer_item_display(item, f"{position_label}: Scatter ({min_shapes}-{max_shapes} shapes)")
             return
         if layer_type == "trimmed_morph_tube":
             repetitions = int(data.get("tube_segment_count", self.TRIMMED_TUBE_LAYER_DEFAULT_REPETITIONS))
             stroke_width = float(data.get("tube_stroke_width", self.TRIMMED_TUBE_LAYER_DEFAULT_STROKE_WIDTH))
             straightness = float(data.get("tube_straightness", self.TRIMMED_TUBE_LAYER_DEFAULT_STRAIGHTNESS))
             morph_steps = int(data.get("tube_morph_steps", self.TRIMMED_TUBE_LAYER_DEFAULT_MORPH_STEPS))
-            item.setText(
-                f"{position_label}: Trimmed Morph Tube (reps={repetitions}, stroke={stroke_width:.2f}, "
-                f"straight={straightness:.2f}, morph={morph_steps})"
+            self._set_layer_item_display(
+                item,
+                f"{position_label}: TrimMorph (r={repetitions}, w={stroke_width:.2f}, "
+                f"s={straightness:.2f}, m={morph_steps})",
             )
             return
 
         repetitions = int(data.get("tube_segment_count", self.TUBE_LAYER_DEFAULT_REPETITIONS))
         stroke_width = float(data.get("tube_stroke_width", self.TUBE_LAYER_DEFAULT_STROKE_WIDTH))
         straightness = float(data.get("tube_straightness", self.TUBE_LAYER_DEFAULT_STRAIGHTNESS))
-        item.setText(
-            f"{position_label}: Tube (reps={repetitions}, stroke={stroke_width:.2f}, straight={straightness:.2f})"
+        self._set_layer_item_display(
+            item,
+            f"{position_label}: Tube (r={repetitions}, w={stroke_width:.2f}, s={straightness:.2f})",
         )
+
+    def _set_layer_item_display(self, item: QListWidgetItem, full_text: str) -> None:
+        item.setToolTip(full_text)
+        viewport_width = max(80, int(self.layer_stack_list.viewport().width()) - 12)
+        metrics = QFontMetrics(self.layer_stack_list.font())
+        elided = metrics.elidedText(full_text, Qt.ElideRight, viewport_width)
+        item.setText(elided)
+
+    def on_layer_properties_toggle(self, expanded: bool) -> None:
+        self.layer_props_scroll.setVisible(bool(expanded))
+        self.layer_props_toggle_button.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
 
     def _refresh_layer_stack_labels(self) -> None:
         for idx in range(self.layer_stack_list.count()):
             self._set_layer_item_text(self.layer_stack_list.item(idx), idx)
 
+    def _clear_layer_selection(self) -> None:
+        self.layer_stack_list.blockSignals(True)
+        self.layer_stack_list.clearSelection()
+        self.layer_stack_list.setCurrentRow(-1)
+        self.layer_stack_list.blockSignals(False)
+        self.on_layer_selection_changed(None, None)
+
     def on_layer_selection_changed(self, current, _previous) -> None:
         if current is None:
             self.selected_layer_label.setText("No layer selected")
             self.layer_props_stack.setCurrentIndex(0)
+            self.layer_editor_panel.setVisible(False)
             return
         data = current.data(Qt.UserRole)
         if not isinstance(data, dict):
             self.selected_layer_label.setText("Unknown layer")
             self.layer_props_stack.setCurrentIndex(0)
+            self.layer_editor_panel.setVisible(False)
             return
         layer_type = str(data.get("type", "")).strip().lower()
         if layer_type == "scatter":
@@ -619,6 +738,7 @@ class ArtUiWindow(QMainWindow):
             self.scatter_target_fill_spin.blockSignals(True)
             self.scatter_target_fill_spin.setValue(target_fill)
             self.scatter_target_fill_spin.blockSignals(False)
+            self.layer_editor_panel.setVisible(True)
             return
 
         if layer_type == "trimmed_morph_tube":
@@ -660,6 +780,13 @@ class ArtUiWindow(QMainWindow):
             self.trimmed_tube_morph_points_spin.blockSignals(True)
             self.trimmed_tube_morph_points_spin.setValue(morph_points)
             self.trimmed_tube_morph_points_spin.blockSignals(False)
+            self.layer_editor_panel.setVisible(True)
+            return
+
+        if layer_type != "segmented_tube":
+            self.selected_layer_label.setText("Unknown layer")
+            self.layer_props_stack.setCurrentIndex(0)
+            self.layer_editor_panel.setVisible(False)
             return
 
         repetitions = int(data.get("tube_segment_count", self.TUBE_LAYER_DEFAULT_REPETITIONS))
@@ -676,6 +803,7 @@ class ArtUiWindow(QMainWindow):
         self.tube_straightness_spin.blockSignals(True)
         self.tube_straightness_spin.setValue(straightness)
         self.tube_straightness_spin.blockSignals(False)
+        self.layer_editor_panel.setVisible(True)
 
     def on_scatter_layer_setting_changed(self, _value) -> None:
         item = self.layer_stack_list.currentItem()
@@ -770,10 +898,7 @@ class ArtUiWindow(QMainWindow):
                 item.setData(Qt.UserRole, self._make_trimmed_tube_layer_data())
                 self.layer_stack_list.addItem(item)
         self._refresh_layer_stack_labels()
-        if self.layer_stack_list.count() > 0:
-            self.layer_stack_list.setCurrentRow(0)
-        else:
-            self.on_layer_selection_changed(None, None)
+        self._clear_layer_selection()
         self.request_live_preview()
 
     def _current_layer_specs(self, for_render: bool = True) -> list[dict[str, object]]:
@@ -844,81 +969,118 @@ class ArtUiWindow(QMainWindow):
     def request_live_preview(self) -> None:
         if self.source_path is None:
             return
+        if self._is_rendering:
+            self._pending_live_preview = True
+            return
         self.preview_timer.start()
 
     def on_live_preview_timeout(self) -> None:
+        if self._is_rendering:
+            self._pending_live_preview = True
+            return
         self._render_composition(save_outputs=False)
 
     def _render_composition(self, save_outputs: bool) -> None:
+        if self._is_rendering:
+            if save_outputs:
+                self._pending_generate = True
+            else:
+                self._pending_live_preview = True
+            return
         if self.source_path is None:
             if save_outputs:
                 QMessageBox.warning(self, "Missing Image", "Load a source image first.")
             return
 
-        output_dir_text = self.output_dir_edit.text().strip() or "output"
-        output_dir = Path(output_dir_text)
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        seed = self._resolve_seed() if save_outputs else int(self.seed_input.value())
-        layer_specs = self._current_layer_specs(for_render=True)
-        if not layer_specs:
-            if save_outputs:
-                QMessageBox.warning(self, "Missing Layers", "Enable at least one layer type.")
-            return
-        layer_specs_ui = self._current_layer_specs(for_render=False)
-
-        project_slug = get_project_slug()
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename_base = f"{project_slug}_{stamp}_seed{seed}"
-        svg_path = output_dir / f"{filename_base}.svg"
-        png_path = output_dir / f"{filename_base}.png"
-        live_png_path = output_dir / "__live_preview.png"
-
+        self._is_rendering = True
         if save_outputs:
-            self._log(f"Generate started | seed={seed} | levels={self.LEVELS}")
-            layer_summary_parts: list[str] = []
-            for idx, layer in enumerate(layer_specs_ui):
-                layer_type = str(layer["type"])
-                if layer_type == "scatter":
-                    low = int(layer.get("scatter_shape_count_min", self.SCATTER_LAYER_DEFAULT_MIN_SHAPES))
-                    high = int(layer.get("scatter_shape_count_max", self.SCATTER_LAYER_DEFAULT_MAX_SHAPES))
-                    layer_summary_parts.append(f"{idx + 1}:scatter({low}-{high})")
-                elif layer_type == "trimmed_morph_tube":
-                    reps = int(layer.get("tube_segment_count", self.TRIMMED_TUBE_LAYER_DEFAULT_REPETITIONS))
-                    stroke = float(layer.get("tube_stroke_width", self.TRIMMED_TUBE_LAYER_DEFAULT_STROKE_WIDTH))
-                    straight = float(layer.get("tube_straightness", self.TRIMMED_TUBE_LAYER_DEFAULT_STRAIGHTNESS))
-                    morph_steps = int(layer.get("tube_morph_steps", self.TRIMMED_TUBE_LAYER_DEFAULT_MORPH_STEPS))
-                    morph_shapes = int(layer.get("tube_morph_shapes", self.TRIMMED_TUBE_LAYER_DEFAULT_MORPH_SHAPES))
-                    layer_summary_parts.append(
-                        f"{idx + 1}:trimmed_morph_tube("
-                        f"reps={reps},stroke={stroke:.2f},straight={straight:.2f},"
-                        f"morph_steps={morph_steps},morph_shapes={morph_shapes})"
-                    )
-                else:
-                    reps = int(layer.get("tube_segment_count", self.TUBE_LAYER_DEFAULT_REPETITIONS))
-                    stroke = float(layer.get("tube_stroke_width", self.TUBE_LAYER_DEFAULT_STROKE_WIDTH))
-                    straight = float(layer.get("tube_straightness", self.TUBE_LAYER_DEFAULT_STRAIGHTNESS))
-                    layer_summary_parts.append(
-                        f"{idx + 1}:tube(reps={reps},stroke={stroke:.2f},straight={straight:.2f})"
-                    )
-            self._log(
-                "Composition settings | "
-                f"layers={' > '.join(layer_summary_parts)} | "
-                f"white_background={self.COMPOSE_WHITE_BACKGROUND} | "
-                f"canvas_3_4={self.canvas_ratio_checkbox.isChecked()} | "
-                f"source_background={self.background_source_checkbox.isChecked()} | "
-                f"bg_blur={self.background_blur_checkbox.isChecked()}"
-            )
+            self.generate_button.setEnabled(False)
+            self.generate_button.setText("Generating...")
+        QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
+            output_dir_text = self.output_dir_edit.text().strip() or "output"
+            output_dir = Path(output_dir_text)
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            seed = self._resolve_seed() if save_outputs else int(self.seed_input.value())
+            layer_specs = self._current_layer_specs(for_render=True)
+            if not layer_specs:
+                if save_outputs:
+                    QMessageBox.warning(self, "Missing Layers", "Enable at least one layer type.")
+                return
+            layer_specs_ui = self._current_layer_specs(for_render=False)
+
+            project_slug = get_project_slug()
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename_base = f"{project_slug}_{stamp}_seed{seed}"
+            svg_path = output_dir / f"{filename_base}.svg"
+            png_path = output_dir / f"{filename_base}.png"
+            live_png_path = output_dir / "__live_preview.png"
+
+            if save_outputs:
+                self._log(f"Generate started | seed={seed} | levels={self.LEVELS}")
+                layer_summary_parts: list[str] = []
+                for idx, layer in enumerate(layer_specs_ui):
+                    layer_type = str(layer["type"])
+                    if layer_type == "scatter":
+                        low = int(layer.get("scatter_shape_count_min", self.SCATTER_LAYER_DEFAULT_MIN_SHAPES))
+                        high = int(layer.get("scatter_shape_count_max", self.SCATTER_LAYER_DEFAULT_MAX_SHAPES))
+                        layer_summary_parts.append(f"{idx + 1}:scatter({low}-{high})")
+                    elif layer_type == "trimmed_morph_tube":
+                        reps = int(layer.get("tube_segment_count", self.TRIMMED_TUBE_LAYER_DEFAULT_REPETITIONS))
+                        stroke = float(layer.get("tube_stroke_width", self.TRIMMED_TUBE_LAYER_DEFAULT_STROKE_WIDTH))
+                        straight = float(layer.get("tube_straightness", self.TRIMMED_TUBE_LAYER_DEFAULT_STRAIGHTNESS))
+                        morph_steps = int(layer.get("tube_morph_steps", self.TRIMMED_TUBE_LAYER_DEFAULT_MORPH_STEPS))
+                        morph_shapes = int(layer.get("tube_morph_shapes", self.TRIMMED_TUBE_LAYER_DEFAULT_MORPH_SHAPES))
+                        layer_summary_parts.append(
+                            f"{idx + 1}:trimmed_morph_tube("
+                            f"reps={reps},stroke={stroke:.2f},straight={straight:.2f},"
+                            f"morph_steps={morph_steps},morph_shapes={morph_shapes})"
+                        )
+                    else:
+                        reps = int(layer.get("tube_segment_count", self.TUBE_LAYER_DEFAULT_REPETITIONS))
+                        stroke = float(layer.get("tube_stroke_width", self.TUBE_LAYER_DEFAULT_STROKE_WIDTH))
+                        straight = float(layer.get("tube_straightness", self.TUBE_LAYER_DEFAULT_STRAIGHTNESS))
+                        layer_summary_parts.append(
+                            f"{idx + 1}:tube(reps={reps},stroke={stroke:.2f},straight={straight:.2f})"
+                        )
+                self._log(
+                    "Composition settings | "
+                    f"layers={' > '.join(layer_summary_parts)} | "
+                    f"white_background={self.COMPOSE_WHITE_BACKGROUND} | "
+                    f"canvas_3_4={self.canvas_ratio_checkbox.isChecked()} | "
+                    f"source_background={self.background_source_checkbox.isChecked()} | "
+                    f"bg_blur={self.background_blur_checkbox.isChecked()}"
+                )
+
             timings: dict[str, float] = {}
 
             t0 = perf_counter()
             source_img = load_image(self.source_path)
             timings["load_image"] = perf_counter() - t0
 
+            requested_width, requested_height = self._canvas_size_for_source(source_img.width, source_img.height)
+            max_dim = self.GENERATE_MAX_DIM if save_outputs else self.PREVIEW_MAX_DIM
+            max_pixels = self.GENERATE_MAX_PIXELS if save_outputs else self.PREVIEW_MAX_PIXELS
+            limited_width, limited_height = self._limit_canvas_size(
+                requested_width,
+                requested_height,
+                max_dim=max_dim,
+                max_pixels=max_pixels,
+            )
+
             t0 = perf_counter()
-            canvas_img = self._prepare_canvas_image(source_img)
+            canvas_img = self._prepare_canvas_image(
+                source_img,
+                max_dim=max_dim,
+                max_pixels=max_pixels,
+            )
             timings["prepare_canvas"] = perf_counter() - t0
+            if save_outputs and (limited_width != requested_width or limited_height != requested_height):
+                self._log(
+                    f"Canvas capped for stability: {requested_width}x{requested_height} -> "
+                    f"{limited_width}x{limited_height}"
+                )
 
             t0 = perf_counter()
             gray = to_grayscale(canvas_img)
@@ -998,6 +1160,19 @@ class ArtUiWindow(QMainWindow):
                 self._log(f"Error: {exc}")
                 self._log(traceback.format_exc())
                 QMessageBox.critical(self, "Generation Failed", str(exc))
+        finally:
+            if QApplication.overrideCursor() is not None:
+                QApplication.restoreOverrideCursor()
+            if save_outputs:
+                self.generate_button.setText("Generate")
+                self.generate_button.setEnabled(True)
+            self._is_rendering = False
+            if self._pending_live_preview and self.source_path is not None:
+                self._pending_live_preview = False
+                self.preview_timer.start()
+            if self._pending_generate and self.source_path is not None and not self._is_rendering:
+                self._pending_generate = False
+                QTimer.singleShot(0, self.on_generate)
 
     def on_generate(self) -> None:
         self._render_composition(save_outputs=True)

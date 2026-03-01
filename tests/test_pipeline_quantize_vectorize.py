@@ -33,6 +33,21 @@ class PipelineQuantizeVectorizeTests(unittest.TestCase):
         self.assertLessEqual(unique.size, 6)
         self.assertGreaterEqual(unique.size, 1)
 
+    def test_quantize_levels_stretches_low_contrast_input_to_full_tone_range(self) -> None:
+        gray = np.asarray(
+            [
+                [110, 112, 114, 116],
+                [118, 120, 122, 124],
+                [126, 128, 130, 132],
+                [134, 136, 138, 140],
+            ],
+            dtype=np.uint8,
+        )
+        quantized = quantize_levels(gray, levels=6)
+        unique = np.unique(quantized)
+        self.assertEqual(int(unique.min()), 0)
+        self.assertEqual(int(unique.max()), 5)
+
     def test_build_svg_is_deterministic_for_same_seed(self) -> None:
         contour = np.array([[[0, 0]], [[30, 0]], [[30, 20]], [[0, 20]]], dtype=np.int32)
         shapes = [{"level": 2, "contour": contour}]
@@ -317,6 +332,48 @@ class PipelineQuantizeVectorizeTests(unittest.TestCase):
             ],
         )
         self.assertEqual(svg.count("<path "), 5)
+
+    def test_build_svg_scatter_with_two_shapes_includes_black_and_white(self) -> None:
+        shapes = []
+        for level in range(6):
+            x = level * 10
+            contour = np.array([[[x, 0]], [[x + 7, 0]], [[x + 7, 7]], [[x, 7]]], dtype=np.int32)
+            shapes.append({"level": level, "contour": contour})
+
+        svg = build_svg(
+            shapes=shapes,
+            width=180,
+            height=120,
+            seed=21,
+            arrangement="scatter",
+            shape_count_range=(2, 2),
+            levels=6,
+        )
+        fills = re.findall(r'fill="(#[0-9a-fA-F]{3})"', svg)
+        self.assertEqual(len(fills), 3)  # includes white background
+        self.assertIn("#000", fills)
+        self.assertIn("#fff", fills)
+
+    def test_build_svg_scatter_with_three_shapes_includes_midtone(self) -> None:
+        shapes = []
+        for level in range(6):
+            x = level * 12
+            contour = np.array([[[x, 0]], [[x + 8, 0]], [[x + 8, 8]], [[x, 8]]], dtype=np.int32)
+            shapes.append({"level": level, "contour": contour})
+
+        svg = build_svg(
+            shapes=shapes,
+            width=200,
+            height=140,
+            seed=33,
+            arrangement="scatter",
+            shape_count_range=(3, 3),
+            levels=6,
+        )
+        fills = re.findall(r'fill="(#[0-9a-fA-F]{3})"', svg)
+        self.assertIn("#000", fills)
+        self.assertIn("#fff", fills)
+        self.assertIn("#999", fills)
 
     def test_build_svg_trimmed_morph_tube_layer_is_seeded(self) -> None:
         shapes = []
