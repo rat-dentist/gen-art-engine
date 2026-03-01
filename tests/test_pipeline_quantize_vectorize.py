@@ -250,6 +250,18 @@ class PipelineQuantizeVectorizeTests(unittest.TestCase):
         self.assertEqual(stroke_widths[:4], ["0.35", "0.35", "0.35", "0.35"])
         self.assertEqual(stroke_widths[4:], ["1.10", "1.10"])
 
+    def test_build_svg_segmented_tube_layer_allows_up_to_1000_repetitions(self) -> None:
+        contour = np.array([[[0, 0]], [[12, 0]], [[12, 8]], [[0, 8]]], dtype=np.int32)
+        svg = build_svg(
+            shapes=[{"level": 2, "contour": contour}],
+            width=280,
+            height=180,
+            seed=144,
+            arrangement="segmented_tube",
+            layer_specs=[{"type": "segmented_tube", "tube_segment_count": 5000}],
+        )
+        self.assertEqual(svg.count("<path "), 1000)
+
     def test_build_svg_tube_repetitions_change_density_not_total_length(self) -> None:
         contour = np.array([[[0, 0]], [[14, 0]], [[14, 10]], [[0, 10]]], dtype=np.int32)
         shapes = [{"level": 2, "contour": contour}]
@@ -415,6 +427,52 @@ class PipelineQuantizeVectorizeTests(unittest.TestCase):
         self.assertEqual(svg_a, svg_b)
         self.assertGreater(svg_a.count("<path "), 0)
         self.assertIn('fill-rule="evenodd"', svg_a)
+
+    def test_build_svg_trimmed_morph_tube_scale_changes_output(self) -> None:
+        shapes = []
+        for idx in range(8):
+            x = (idx % 4) * 10
+            y = (idx // 4) * 10
+            contour = np.array([[[x, y]], [[x + 7, y]], [[x + 7, y + 7]], [[x, y + 7]]], dtype=np.int32)
+            shapes.append({"level": idx % 6, "contour": contour})
+
+        base_layer = {
+            "type": "trimmed_morph_tube",
+            "tube_segment_count": 14,
+            "tube_stroke_width": 0.80,
+            "tube_straightness": 0.40,
+            "tube_base_simplify": 0.6,
+            "tube_ring_simplify": 0.4,
+            "tube_piece_min_area": 6.0,
+            "tube_morph_steps": 0,
+            "tube_morph_shapes": 1,
+            "tube_morph_points": 48,
+        }
+        layer_small = dict(base_layer)
+        layer_small["tube_scale"] = 0.60
+        layer_large = dict(base_layer)
+        layer_large["tube_scale"] = 1.80
+
+        svg_small = build_svg(
+            shapes=shapes,
+            width=260,
+            height=180,
+            seed=181,
+            arrangement="scatter",
+            layer_specs=[layer_small],
+        )
+        svg_large = build_svg(
+            shapes=shapes,
+            width=260,
+            height=180,
+            seed=181,
+            arrangement="scatter",
+            layer_specs=[layer_large],
+        )
+
+        self.assertGreater(svg_small.count("<path "), 0)
+        self.assertGreater(svg_large.count("<path "), 0)
+        self.assertNotEqual(svg_small, svg_large)
 
     def test_build_svg_layer_sequence_accepts_trimmed_morph_tube(self) -> None:
         contour = np.array([[[0, 0]], [[12, 0]], [[12, 8]], [[0, 8]]], dtype=np.int32)

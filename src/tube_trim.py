@@ -267,6 +267,7 @@ def generate_segmented_tube_contours(
     seed: int,
     segment_count: int,
     straightness: float = 0.45,
+    scale_multiplier: float = 1.0,
     contour_simplify_eps: float | None = None,
     contour_bank: Sequence[np.ndarray] | None = None,
 ) -> list[np.ndarray]:
@@ -288,7 +289,7 @@ def generate_segmented_tube_contours(
                 contour = simplified.astype(np.float32)
         source_contours = [contour.astype(np.float32)]
 
-    count = max(1, min(400, int(segment_count)))
+    count = max(1, min(1000, int(segment_count)))
     rng = random.Random(int(seed))
 
     majors: list[float] = []
@@ -302,6 +303,7 @@ def generate_segmented_tube_contours(
     target_major = min_canvas_dim * rng.uniform(0.10, 0.17)
     min_scale = min_major / representative_major
     base_scale = max(min_scale, target_major / representative_major)
+    base_scale *= max(0.20, min(4.00, float(scale_multiplier)))
     base_scale = max(0.95, min(120.0, base_scale))
 
     segment_major = representative_major * base_scale

@@ -126,6 +126,50 @@ class TubeTrimTests(unittest.TestCase):
         self.assertEqual(len(simplified), 1)
         self.assertGreater(unsimplified[0].shape[0], simplified[0].shape[0])
 
+    def test_generate_segmented_tube_contours_allows_up_to_1000_segments(self) -> None:
+        base = _rect_contour(0, 0, 20, 12)
+        contours = generate_segmented_tube_contours(
+            base_contour=base,
+            width=260,
+            height=180,
+            seed=31,
+            segment_count=5000,
+            straightness=0.5,
+        )
+        self.assertEqual(len(contours), 1000)
+
+    def test_generate_segmented_tube_contours_scale_multiplier_changes_segment_size(self) -> None:
+        base = _rect_contour(0, 0, 20, 12)
+        contours_small = generate_segmented_tube_contours(
+            base_contour=base,
+            width=320,
+            height=220,
+            seed=19,
+            segment_count=12,
+            straightness=0.5,
+            scale_multiplier=0.6,
+        )
+        contours_large = generate_segmented_tube_contours(
+            base_contour=base,
+            width=320,
+            height=220,
+            seed=19,
+            segment_count=12,
+            straightness=0.5,
+            scale_multiplier=1.8,
+        )
+
+        def average_major(contours: list[np.ndarray]) -> float:
+            majors: list[float] = []
+            for contour in contours:
+                _x, _y, w, h = cv2.boundingRect(np.rint(contour).astype(np.int32))
+                majors.append(float(max(w, h)))
+            return float(np.mean(np.asarray(majors, dtype=np.float32)))
+
+        avg_small = average_major(contours_small)
+        avg_large = average_major(contours_large)
+        self.assertGreater(avg_large, avg_small * 1.2)
+
     def test_build_all_to_all_morph_bank_expected_count(self) -> None:
         a = _rect_contour(0, 0, 20, 10)
         b = _rect_contour(2, 2, 14, 16)

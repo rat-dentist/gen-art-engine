@@ -30,8 +30,8 @@ UI flow:
 - Startup default stack is `Top tube (400 reps)`, `Middle scatter`, `Bottom tube (50 reps)`.
 - Each selected layer has its own properties panel.
 - Scatter layers: per-layer shape count range and target fill.
-- Tube layers: per-layer repetition count, outline thickness, and path straightness.
-- Trimmed morph tube layers: repetition/outline/straightness plus simplify, min piece area, and morph controls.
+- Tube layers: per-layer repetition count (up to 1000), outline thickness, and path straightness.
+- Trimmed morph tube layers: repetition (up to 1000), outline/straightness/scale, plus simplify, min piece area, and morph controls.
 - Tube repetition changes density while keeping tube length fixed for that generated layer.
 - Tube paths are allowed to run beyond the frame edges (they can be clipped by the canvas view).
 - Property edits update the output preview in real time.

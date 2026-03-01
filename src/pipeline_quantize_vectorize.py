@@ -15,6 +15,8 @@ from tube_trim import (
     trim_overlapping_contours,
 )
 
+MAX_TUBE_SEGMENTS = 1000
+
 
 class ShapeRecord(TypedDict):
     level: int
@@ -30,6 +32,7 @@ class LayerSpec(TypedDict, total=False):
     tube_segment_count: int
     tube_stroke_width: float
     tube_straightness: float
+    tube_scale: float
     tube_base_simplify: float
     tube_ring_simplify: float
     tube_piece_min_area: float
@@ -608,7 +611,7 @@ def _append_segmented_tube_layer(
 
     segment_major = base_major * base_scale
     if tube_segment_count is not None:
-        segment_count = max(1, min(400, int(tube_segment_count)))
+        segment_count = max(1, min(MAX_TUBE_SEGMENTS, int(tube_segment_count)))
     elif tube_segment_count_range is not None:
         low, high = tube_segment_count_range
         low = max(1, int(low))
@@ -621,7 +624,7 @@ def _append_segmented_tube_layer(
         auto_low = max(12, int(round((min_canvas_dim * 1.6) / max(1.0, estimated_step))))
         auto_high = max(auto_low, int(round((min_canvas_dim * 2.9) / max(1.0, estimated_step))))
         segment_count = rng.randint(auto_low, auto_high)
-    segment_count = max(1, min(400, int(segment_count)))
+    segment_count = max(1, min(MAX_TUBE_SEGMENTS, int(segment_count)))
 
     total_tube_length = max(segment_major * rng.uniform(16.0, 24.0), min_canvas_dim * 0.9)
     step_length = max(0.2, total_tube_length / max(1, segment_count - 1))
@@ -665,6 +668,7 @@ def _append_trimmed_morph_tube_layer(
     tube_segment_count: int | None = None,
     tube_stroke_width: float | None = None,
     tube_straightness: float | None = None,
+    tube_scale: float | None = None,
     tube_base_simplify: float | None = None,
     tube_ring_simplify: float | None = None,
     tube_piece_min_area: float | None = None,
@@ -699,7 +703,7 @@ def _append_trimmed_morph_tube_layer(
         )
 
     if tube_segment_count is not None:
-        segment_count = max(1, min(400, int(tube_segment_count)))
+        segment_count = max(1, min(MAX_TUBE_SEGMENTS, int(tube_segment_count)))
     elif tube_segment_count_range is not None:
         low, high = tube_segment_count_range
         low = max(1, int(low))
@@ -709,9 +713,11 @@ def _append_trimmed_morph_tube_layer(
         segment_count = rng.randint(low, high)
     else:
         segment_count = 140
+    segment_count = max(1, min(MAX_TUBE_SEGMENTS, int(segment_count)))
 
     stroke_width = 1.2 if tube_stroke_width is None else max(0.10, min(12.0, float(tube_stroke_width)))
     straightness = 0.45 if tube_straightness is None else max(0.0, min(1.0, float(tube_straightness)))
+    scale_multiplier = 1.0 if tube_scale is None else max(0.20, min(4.00, float(tube_scale)))
     layer_seed = rng.randint(0, 2_147_483_647)
 
     segments = generate_segmented_tube_contours(
@@ -721,6 +727,7 @@ def _append_trimmed_morph_tube_layer(
         seed=layer_seed,
         segment_count=segment_count,
         straightness=straightness,
+        scale_multiplier=scale_multiplier,
         contour_simplify_eps=base_simplify,
         contour_bank=contour_bank,
     )
@@ -793,7 +800,7 @@ def build_svg(
                 width_raw = raw_dict.get("tube_stroke_width")
                 straight_raw = raw_dict.get("tube_straightness")
                 if count_raw is not None:
-                    resolved["tube_segment_count"] = max(1, min(400, int(count_raw)))
+                    resolved["tube_segment_count"] = max(1, min(MAX_TUBE_SEGMENTS, int(count_raw)))
                 if width_raw is not None:
                     resolved["tube_stroke_width"] = max(0.10, min(12.0, float(width_raw)))
                 if straight_raw is not None:
@@ -802,6 +809,7 @@ def build_svg(
                 count_raw = raw_dict.get("tube_segment_count")
                 width_raw = raw_dict.get("tube_stroke_width")
                 straight_raw = raw_dict.get("tube_straightness")
+                scale_raw = raw_dict.get("tube_scale")
                 base_simplify_raw = raw_dict.get("tube_base_simplify")
                 ring_simplify_raw = raw_dict.get("tube_ring_simplify")
                 min_piece_raw = raw_dict.get("tube_piece_min_area")
@@ -809,11 +817,13 @@ def build_svg(
                 morph_shapes_raw = raw_dict.get("tube_morph_shapes")
                 morph_points_raw = raw_dict.get("tube_morph_points")
                 if count_raw is not None:
-                    resolved["tube_segment_count"] = max(1, min(400, int(count_raw)))
+                    resolved["tube_segment_count"] = max(1, min(MAX_TUBE_SEGMENTS, int(count_raw)))
                 if width_raw is not None:
                     resolved["tube_stroke_width"] = max(0.10, min(12.0, float(width_raw)))
                 if straight_raw is not None:
                     resolved["tube_straightness"] = max(0.0, min(1.0, float(straight_raw)))
+                if scale_raw is not None:
+                    resolved["tube_scale"] = max(0.20, min(4.00, float(scale_raw)))
                 if base_simplify_raw is not None:
                     resolved["tube_base_simplify"] = max(0.0, min(24.0, float(base_simplify_raw)))
                 if ring_simplify_raw is not None:
@@ -919,6 +929,7 @@ def build_svg(
                 tube_segment_count=layer_spec.get("tube_segment_count"),
                 tube_stroke_width=layer_spec.get("tube_stroke_width"),
                 tube_straightness=layer_spec.get("tube_straightness"),
+                tube_scale=layer_spec.get("tube_scale"),
                 tube_base_simplify=layer_spec.get("tube_base_simplify"),
                 tube_ring_simplify=layer_spec.get("tube_ring_simplify"),
                 tube_piece_min_area=layer_spec.get("tube_piece_min_area"),

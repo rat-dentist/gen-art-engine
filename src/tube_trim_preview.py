@@ -211,7 +211,7 @@ class TubeTrimPreviewWindow(QMainWindow):
         super().__init__()
         self.image_path = image_path
         self.seed = int(seed)
-        self.segment_count = max(1, min(400, int(segment_count)))
+        self.segment_count = max(1, min(1000, int(segment_count)))
         self.straightness = max(0.0, min(1.0, float(straightness)))
         self.stroke_width = max(0.1, float(stroke_width))
         self.base_simplify = max(0.0, float(base_simplify))
@@ -270,7 +270,7 @@ class TubeTrimPreviewWindow(QMainWindow):
         form.addRow("Seed", self.seed_spin)
 
         self.segments_spin = QSpinBox(group)
-        self.segments_spin.setRange(1, 400)
+        self.segments_spin.setRange(1, 1000)
         self.segments_spin.setValue(self.segment_count)
         form.addRow("Segments", self.segments_spin)
 
@@ -354,7 +354,7 @@ class TubeTrimPreviewWindow(QMainWindow):
 
     def _sync_state_from_controls(self) -> None:
         self.seed = int(self.seed_spin.value())
-        self.segment_count = max(1, min(400, int(self.segments_spin.value())))
+        self.segment_count = max(1, min(1000, int(self.segments_spin.value())))
         self.straightness = max(0.0, min(1.0, float(self.straightness_spin.value())))
         self.stroke_width = max(0.1, float(self.stroke_width_spin.value()))
         self.base_simplify = max(0.0, float(self.base_simplify_spin.value()))
