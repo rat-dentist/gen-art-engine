@@ -8,6 +8,12 @@ from typing import Iterable, TypedDict
 import cv2
 import numpy as np
 from PIL import Image
+from tube_trim import (
+    build_all_to_all_morph_bank,
+    generate_segmented_tube_contours,
+    piece_rings,
+    trim_overlapping_contours,
+)
 
 
 class ShapeRecord(TypedDict):
@@ -24,6 +30,12 @@ class LayerSpec(TypedDict, total=False):
     tube_segment_count: int
     tube_stroke_width: float
     tube_straightness: float
+    tube_base_simplify: float
+    tube_ring_simplify: float
+    tube_piece_min_area: float
+    tube_morph_steps: int
+    tube_morph_shapes: int
+    tube_morph_points: int
 
 
 def _shape_area(shape: ShapeRecord) -> float:
@@ -227,6 +239,28 @@ def _choose_tube_shape(shapes: list[ShapeRecord], rng: random.Random) -> ShapeRe
     candidate_count = max(1, min(len(sorted_shapes), max(3, len(sorted_shapes) // 3)))
     pool = sorted_shapes[:candidate_count]
     return pool[rng.randrange(len(pool))]
+
+
+def _choose_top_tube_shapes(shapes: list[ShapeRecord], count: int) -> list[ShapeRecord]:
+    if not shapes:
+        return []
+    sorted_shapes = sorted(shapes, key=_shape_area, reverse=True)
+    return sorted_shapes[: max(1, min(len(sorted_shapes), int(count)))]
+
+
+def _piece_to_svg_path_data(piece_mask, simplify_eps: float) -> str:
+    commands: list[str] = []
+    for ring in piece_rings(piece_mask, simplify_eps=max(0.0, float(simplify_eps))):
+        contour = ring.reshape(-1, 1, 2).astype(np.float32)
+        ring_path = contour_to_svg_path(
+            contour,
+            simplify_eps=0.0,
+            smooth_iterations=0,
+            use_curves=False,
+        )
+        if ring_path:
+            commands.append(ring_path)
+    return " ".join(commands)
 
 
 def _tube_path_points(
@@ -509,6 +543,94 @@ def _append_segmented_tube_layer(
         )
 
 
+def _append_trimmed_morph_tube_layer(
+    lines: list[str],
+    shapes: list[ShapeRecord],
+    rng: random.Random,
+    width: int,
+    height: int,
+    tube_segment_count_range: tuple[int, int] | None,
+    tube_segment_count: int | None = None,
+    tube_stroke_width: float | None = None,
+    tube_straightness: float | None = None,
+    tube_base_simplify: float | None = None,
+    tube_ring_simplify: float | None = None,
+    tube_piece_min_area: float | None = None,
+    tube_morph_steps: int | None = None,
+    tube_morph_shapes: int | None = None,
+    tube_morph_points: int | None = None,
+) -> None:
+    if not shapes:
+        return
+
+    morph_shape_count = max(1, min(16, int(4 if tube_morph_shapes is None else tube_morph_shapes)))
+    selected_shapes = _choose_top_tube_shapes(shapes, count=morph_shape_count)
+    if not selected_shapes:
+        return
+    base_contours = [shape["contour"] for shape in selected_shapes]
+    primary_contour = base_contours[0]
+
+    base_simplify = 1.4 if tube_base_simplify is None else max(0.0, float(tube_base_simplify))
+    ring_simplify = 0.9 if tube_ring_simplify is None else max(0.0, float(tube_ring_simplify))
+    piece_min_area = 18.0 if tube_piece_min_area is None else max(1.0, float(tube_piece_min_area))
+    morph_steps = max(0, min(24, int(6 if tube_morph_steps is None else tube_morph_steps)))
+    morph_points = max(8, min(512, int(96 if tube_morph_points is None else tube_morph_points)))
+
+    contour_bank: list[np.ndarray] | None = None
+    if morph_steps > 0 and len(base_contours) > 1:
+        contour_bank = build_all_to_all_morph_bank(
+            contours=base_contours,
+            steps=morph_steps,
+            point_count=morph_points,
+            simplify_eps=base_simplify,
+        )
+
+    if tube_segment_count is not None:
+        segment_count = max(1, min(400, int(tube_segment_count)))
+    elif tube_segment_count_range is not None:
+        low, high = tube_segment_count_range
+        low = max(1, int(low))
+        high = max(1, int(high))
+        if low > high:
+            low, high = high, low
+        segment_count = rng.randint(low, high)
+    else:
+        segment_count = 140
+
+    stroke_width = 1.2 if tube_stroke_width is None else max(0.10, min(12.0, float(tube_stroke_width)))
+    straightness = 0.45 if tube_straightness is None else max(0.0, min(1.0, float(tube_straightness)))
+    layer_seed = rng.randint(0, 2_147_483_647)
+
+    segments = generate_segmented_tube_contours(
+        base_contour=primary_contour,
+        width=width,
+        height=height,
+        seed=layer_seed,
+        segment_count=segment_count,
+        straightness=straightness,
+        contour_simplify_eps=base_simplify,
+        contour_bank=contour_bank,
+    )
+    pieces = trim_overlapping_contours(
+        segments,
+        min_piece_area=piece_min_area,
+        clip_bounds=(0, 0, int(width), int(height)),
+    )
+
+    for piece in pieces:
+        path_data = _piece_to_svg_path_data(piece, simplify_eps=ring_simplify)
+        if not path_data:
+            continue
+        lines.append(
+            f'<path d="{path_data}" fill="#ffffff" fill-opacity="1" '
+            f'fill-rule="evenodd" '
+            f'stroke="#000000" stroke-opacity="1" '
+            f'stroke-width="{stroke_width:.2f}" stroke-linejoin="round" stroke-linecap="round" '
+            f'paint-order="fill stroke" '
+            f'vector-effect="non-scaling-stroke" />'
+        )
+
+
 def build_svg(
     shapes: Iterable[ShapeRecord],
     width: int,
@@ -530,7 +652,7 @@ def build_svg(
     max_level = max((int(shape["level"]) for shape in all_shapes), default=0)
     level_count = levels if levels is not None else (max_level + 1)
     rng = random.Random(seed)
-    if arrangement not in {"scatter", "segmented_tube", "scatter_segmented_tube"}:
+    if arrangement not in {"scatter", "segmented_tube", "scatter_segmented_tube", "trimmed_morph_tube"}:
         raise ValueError(f"Unsupported arrangement: {arrangement}")
 
     resolved_layer_specs: list[LayerSpec] = []
@@ -540,7 +662,7 @@ def build_svg(
             layer = str(raw_dict.get("type", "")).strip().lower()
             if not layer:
                 continue
-            if layer not in {"scatter", "segmented_tube"}:
+            if layer not in {"scatter", "segmented_tube", "trimmed_morph_tube"}:
                 raise ValueError(f"Unsupported layer type: {layer}")
             resolved: LayerSpec = {"type": layer}
             if layer == "scatter":
@@ -553,7 +675,7 @@ def build_svg(
                     resolved["scatter_shape_count_max"] = max(1, min(500, int(scatter_max_raw)))
                 if scatter_fill_raw is not None:
                     resolved["scatter_target_fill_ratio"] = max(0.05, min(0.95, float(scatter_fill_raw)))
-            else:
+            elif layer == "segmented_tube":
                 count_raw = raw_dict.get("tube_segment_count")
                 width_raw = raw_dict.get("tube_stroke_width")
                 straight_raw = raw_dict.get("tube_straightness")
@@ -563,6 +685,34 @@ def build_svg(
                     resolved["tube_stroke_width"] = max(0.10, min(12.0, float(width_raw)))
                 if straight_raw is not None:
                     resolved["tube_straightness"] = max(0.0, min(1.0, float(straight_raw)))
+            else:
+                count_raw = raw_dict.get("tube_segment_count")
+                width_raw = raw_dict.get("tube_stroke_width")
+                straight_raw = raw_dict.get("tube_straightness")
+                base_simplify_raw = raw_dict.get("tube_base_simplify")
+                ring_simplify_raw = raw_dict.get("tube_ring_simplify")
+                min_piece_raw = raw_dict.get("tube_piece_min_area")
+                morph_steps_raw = raw_dict.get("tube_morph_steps")
+                morph_shapes_raw = raw_dict.get("tube_morph_shapes")
+                morph_points_raw = raw_dict.get("tube_morph_points")
+                if count_raw is not None:
+                    resolved["tube_segment_count"] = max(1, min(400, int(count_raw)))
+                if width_raw is not None:
+                    resolved["tube_stroke_width"] = max(0.10, min(12.0, float(width_raw)))
+                if straight_raw is not None:
+                    resolved["tube_straightness"] = max(0.0, min(1.0, float(straight_raw)))
+                if base_simplify_raw is not None:
+                    resolved["tube_base_simplify"] = max(0.0, min(24.0, float(base_simplify_raw)))
+                if ring_simplify_raw is not None:
+                    resolved["tube_ring_simplify"] = max(0.0, min(24.0, float(ring_simplify_raw)))
+                if min_piece_raw is not None:
+                    resolved["tube_piece_min_area"] = max(1.0, min(5000.0, float(min_piece_raw)))
+                if morph_steps_raw is not None:
+                    resolved["tube_morph_steps"] = max(0, min(24, int(morph_steps_raw)))
+                if morph_shapes_raw is not None:
+                    resolved["tube_morph_shapes"] = max(1, min(16, int(morph_shapes_raw)))
+                if morph_points_raw is not None:
+                    resolved["tube_morph_points"] = max(8, min(512, int(morph_points_raw)))
             resolved_layer_specs.append(resolved)
 
     resolved_layers: list[str] = []
@@ -571,7 +721,7 @@ def build_svg(
             layer = str(raw_layer).strip().lower()
             if not layer:
                 continue
-            if layer not in {"scatter", "segmented_tube"}:
+            if layer not in {"scatter", "segmented_tube", "trimmed_morph_tube"}:
                 raise ValueError(f"Unsupported layer type: {layer}")
             resolved_layers.append(layer)
     if not resolved_layer_specs and not resolved_layers:
@@ -579,6 +729,8 @@ def build_svg(
             resolved_layers = ["scatter"]
         elif arrangement == "segmented_tube":
             resolved_layers = ["segmented_tube"]
+        elif arrangement == "trimmed_morph_tube":
+            resolved_layers = ["trimmed_morph_tube"]
         else:
             resolved_layers = ["scatter", "segmented_tube"]
     if not resolved_layer_specs:
@@ -631,7 +783,7 @@ def build_svg(
                 shape_count_range=scatter_shape_count_range,
                 target_fill_ratio=scatter_target_fill_ratio,
             )
-        else:
+        elif layer_type == "segmented_tube":
             _append_segmented_tube_layer(
                 lines=lines,
                 shapes=all_shapes,
@@ -642,6 +794,24 @@ def build_svg(
                 tube_segment_count=layer_spec.get("tube_segment_count"),
                 tube_stroke_width=layer_spec.get("tube_stroke_width"),
                 tube_straightness=layer_spec.get("tube_straightness"),
+            )
+        else:
+            _append_trimmed_morph_tube_layer(
+                lines=lines,
+                shapes=all_shapes,
+                rng=rng,
+                width=width,
+                height=height,
+                tube_segment_count_range=tube_segment_count_range,
+                tube_segment_count=layer_spec.get("tube_segment_count"),
+                tube_stroke_width=layer_spec.get("tube_stroke_width"),
+                tube_straightness=layer_spec.get("tube_straightness"),
+                tube_base_simplify=layer_spec.get("tube_base_simplify"),
+                tube_ring_simplify=layer_spec.get("tube_ring_simplify"),
+                tube_piece_min_area=layer_spec.get("tube_piece_min_area"),
+                tube_morph_steps=layer_spec.get("tube_morph_steps"),
+                tube_morph_shapes=layer_spec.get("tube_morph_shapes"),
+                tube_morph_points=layer_spec.get("tube_morph_points"),
             )
 
     lines.append("</g>")

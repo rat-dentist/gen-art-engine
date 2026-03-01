@@ -25,11 +25,13 @@ UI flow:
 - Extract tone-bucket contours.
 - Re-compose a seeded random subset (4-8 shapes) with varied scale, including large hero shapes.
 - Toggle `Scatter` and `Segmented tube` layer types independently and set layer counts for each.
+- Add optional `Trimmed morph tube` layers (overlap-trimmed tube pieces with all-to-all shape morphing).
 - Drag layer items up/down in the layer stack to control over/under order (`Top` row draws on top).
 - Startup default stack is `Top tube (400 reps)`, `Middle scatter`, `Bottom tube (50 reps)`.
 - Each selected layer has its own properties panel.
 - Scatter layers: per-layer shape count range and target fill.
 - Tube layers: per-layer repetition count, outline thickness, and path straightness.
+- Trimmed morph tube layers: repetition/outline/straightness plus simplify, min piece area, and morph controls.
 - Tube repetition changes density while keeping tube length fixed for that generated layer.
 - Tube paths are allowed to run beyond the frame edges (they can be clipped by the canvas view).
 - Property edits update the output preview in real time.
@@ -38,6 +40,45 @@ UI flow:
 - Output preview is the primary canvas in the UI; input is shown as a small thumbnail.
 - Seed randomization is enabled by default (you can disable it for deterministic reruns).
 - Export `.svg` and `.png` to the selected output folder (default `output/`).
+
+### Tube trim prototype (test sketch)
+
+Use this standalone preview to validate overlap splitting before integrating into the main UI:
+
+```powershell
+python src/tube_trim_preview.py
+```
+
+By default it tries:
+
+`G:\My Drive\ART\_Source Imagery\14a6a32a-8830-4cf6-ba17-7b724781ba97.png`
+
+If that file is missing, a file picker opens.
+
+You can still override the source image:
+
+```powershell
+python src/tube_trim_preview.py --image "G:\My Drive\ART\_Source Imagery\some_other_image.png"
+```
+
+Useful simplification controls for less intricate cutouts:
+
+```powershell
+python src/tube_trim_preview.py --base-simplify 2.0 --ring-simplify 1.2 --piece-min-area 30
+```
+
+Morph/tween controls (all-to-all between selected source shapes):
+
+```powershell
+python src/tube_trim_preview.py --morph-steps 6 --morph-shapes 4 --morph-points 96
+```
+
+Controls:
+
+- Drag pieces with mouse to confirm they are independent.
+- `Space`: reseed and rebuild.
+- `R`: rebuild with current seed.
+- In-window panel lets you edit seed/segments/simplify/morph settings and click `Apply + Rebuild`.
 
 ## Base mode
 

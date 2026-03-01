@@ -318,6 +318,59 @@ class PipelineQuantizeVectorizeTests(unittest.TestCase):
         )
         self.assertEqual(svg.count("<path "), 5)
 
+    def test_build_svg_trimmed_morph_tube_layer_is_seeded(self) -> None:
+        shapes = []
+        for idx in range(8):
+            x = (idx % 4) * 12
+            y = (idx // 4) * 12
+            contour = np.array([[[x, y]], [[x + 8, y]], [[x + 8, y + 8]], [[x, y + 8]]], dtype=np.int32)
+            shapes.append({"level": idx % 6, "contour": contour})
+
+        layer = {
+            "type": "trimmed_morph_tube",
+            "tube_segment_count": 12,
+            "tube_stroke_width": 0.80,
+            "tube_straightness": 0.40,
+            "tube_base_simplify": 0.6,
+            "tube_ring_simplify": 0.4,
+            "tube_piece_min_area": 6.0,
+            "tube_morph_steps": 6,
+            "tube_morph_shapes": 4,
+            "tube_morph_points": 48,
+        }
+        svg_a = build_svg(
+            shapes=shapes,
+            width=260,
+            height=180,
+            seed=901,
+            arrangement="scatter",
+            layer_specs=[layer],
+        )
+        svg_b = build_svg(
+            shapes=shapes,
+            width=260,
+            height=180,
+            seed=901,
+            arrangement="scatter",
+            layer_specs=[layer],
+        )
+
+        self.assertEqual(svg_a, svg_b)
+        self.assertGreater(svg_a.count("<path "), 0)
+        self.assertIn('fill-rule="evenodd"', svg_a)
+
+    def test_build_svg_layer_sequence_accepts_trimmed_morph_tube(self) -> None:
+        contour = np.array([[[0, 0]], [[12, 0]], [[12, 8]], [[0, 8]]], dtype=np.int32)
+        shapes = [{"level": 1, "contour": contour}]
+        svg = build_svg(
+            shapes=shapes,
+            width=220,
+            height=140,
+            seed=77,
+            arrangement="trimmed_morph_tube",
+        )
+        self.assertGreater(svg.count("<path "), 0)
+
     def test_contours_by_level_finds_shape_in_synthetic_image(self) -> None:
         quantized = np.zeros((64, 64), dtype=np.uint8)
         quantized[20:44, 18:46] = 3

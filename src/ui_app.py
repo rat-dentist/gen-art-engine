@@ -57,12 +57,22 @@ class ArtUiWindow(QMainWindow):
     COMPOSE_HERO_TARGET_FILL_RATIO = 0.50
     COMPOSE_SCATTER_LAYER_COUNT = 1
     COMPOSE_TUBE_LAYER_COUNT = 2
+    COMPOSE_TRIMMED_TUBE_LAYER_COUNT = 1
     SCATTER_LAYER_DEFAULT_MIN_SHAPES = 4
     SCATTER_LAYER_DEFAULT_MAX_SHAPES = 8
     SCATTER_LAYER_DEFAULT_TARGET_FILL_RATIO = 0.50
     TUBE_LAYER_DEFAULT_REPETITIONS = 30
     TUBE_LAYER_DEFAULT_STROKE_WIDTH = 0.30
     TUBE_LAYER_DEFAULT_STRAIGHTNESS = 0.45
+    TRIMMED_TUBE_LAYER_DEFAULT_REPETITIONS = 140
+    TRIMMED_TUBE_LAYER_DEFAULT_STROKE_WIDTH = 1.20
+    TRIMMED_TUBE_LAYER_DEFAULT_STRAIGHTNESS = 0.45
+    TRIMMED_TUBE_LAYER_DEFAULT_BASE_SIMPLIFY = 1.40
+    TRIMMED_TUBE_LAYER_DEFAULT_RING_SIMPLIFY = 0.90
+    TRIMMED_TUBE_LAYER_DEFAULT_MIN_PIECE_AREA = 18.0
+    TRIMMED_TUBE_LAYER_DEFAULT_MORPH_STEPS = 6
+    TRIMMED_TUBE_LAYER_DEFAULT_MORPH_SHAPES = 4
+    TRIMMED_TUBE_LAYER_DEFAULT_MORPH_POINTS = 96
     DEFAULT_TOP_TUBE_REPETITIONS = 400
     DEFAULT_BOTTOM_TUBE_REPETITIONS = 50
     COMPOSE_TUBE_SEGMENT_COUNT_RANGE = (18, 42)
@@ -130,6 +140,12 @@ class ArtUiWindow(QMainWindow):
         self.tube_layer_count.setRange(1, 12)
         self.tube_layer_count.setValue(self.COMPOSE_TUBE_LAYER_COUNT)
 
+        self.trimmed_tube_enabled_checkbox = QCheckBox("Enable trimmed morph tube")
+        self.trimmed_tube_enabled_checkbox.setChecked(False)
+        self.trimmed_tube_layer_count = QSpinBox()
+        self.trimmed_tube_layer_count.setRange(1, 12)
+        self.trimmed_tube_layer_count.setValue(self.COMPOSE_TRIMMED_TUBE_LAYER_COUNT)
+
         self.layer_stack_list = QListWidget()
         self.layer_stack_list.setDragDropMode(QAbstractItemView.InternalMove)
         self.layer_stack_list.setDefaultDropAction(Qt.MoveAction)
@@ -191,6 +207,66 @@ class ArtUiWindow(QMainWindow):
         tube_form.addRow("Outline Width", self.tube_stroke_width_spin)
         tube_form.addRow("Straightness", self.tube_straightness_spin)
         self.layer_props_stack.addWidget(tube_page)
+
+        trimmed_tube_page = QWidget()
+        trimmed_tube_form = QFormLayout(trimmed_tube_page)
+        self.trimmed_tube_repetitions_spin = QSpinBox()
+        self.trimmed_tube_repetitions_spin.setRange(1, 400)
+        self.trimmed_tube_repetitions_spin.setValue(self.TRIMMED_TUBE_LAYER_DEFAULT_REPETITIONS)
+        self.trimmed_tube_repetitions_spin.valueChanged.connect(self.on_trimmed_tube_layer_setting_changed)
+        self.trimmed_tube_stroke_width_spin = QDoubleSpinBox()
+        self.trimmed_tube_stroke_width_spin.setRange(0.10, 12.0)
+        self.trimmed_tube_stroke_width_spin.setDecimals(2)
+        self.trimmed_tube_stroke_width_spin.setSingleStep(0.05)
+        self.trimmed_tube_stroke_width_spin.setValue(self.TRIMMED_TUBE_LAYER_DEFAULT_STROKE_WIDTH)
+        self.trimmed_tube_stroke_width_spin.valueChanged.connect(self.on_trimmed_tube_layer_setting_changed)
+        self.trimmed_tube_straightness_spin = QDoubleSpinBox()
+        self.trimmed_tube_straightness_spin.setRange(0.0, 1.0)
+        self.trimmed_tube_straightness_spin.setDecimals(2)
+        self.trimmed_tube_straightness_spin.setSingleStep(0.05)
+        self.trimmed_tube_straightness_spin.setValue(self.TRIMMED_TUBE_LAYER_DEFAULT_STRAIGHTNESS)
+        self.trimmed_tube_straightness_spin.valueChanged.connect(self.on_trimmed_tube_layer_setting_changed)
+        self.trimmed_tube_base_simplify_spin = QDoubleSpinBox()
+        self.trimmed_tube_base_simplify_spin.setRange(0.0, 24.0)
+        self.trimmed_tube_base_simplify_spin.setDecimals(2)
+        self.trimmed_tube_base_simplify_spin.setSingleStep(0.10)
+        self.trimmed_tube_base_simplify_spin.setValue(self.TRIMMED_TUBE_LAYER_DEFAULT_BASE_SIMPLIFY)
+        self.trimmed_tube_base_simplify_spin.valueChanged.connect(self.on_trimmed_tube_layer_setting_changed)
+        self.trimmed_tube_ring_simplify_spin = QDoubleSpinBox()
+        self.trimmed_tube_ring_simplify_spin.setRange(0.0, 24.0)
+        self.trimmed_tube_ring_simplify_spin.setDecimals(2)
+        self.trimmed_tube_ring_simplify_spin.setSingleStep(0.10)
+        self.trimmed_tube_ring_simplify_spin.setValue(self.TRIMMED_TUBE_LAYER_DEFAULT_RING_SIMPLIFY)
+        self.trimmed_tube_ring_simplify_spin.valueChanged.connect(self.on_trimmed_tube_layer_setting_changed)
+        self.trimmed_tube_min_piece_area_spin = QDoubleSpinBox()
+        self.trimmed_tube_min_piece_area_spin.setRange(1.0, 5000.0)
+        self.trimmed_tube_min_piece_area_spin.setDecimals(1)
+        self.trimmed_tube_min_piece_area_spin.setSingleStep(1.0)
+        self.trimmed_tube_min_piece_area_spin.setValue(self.TRIMMED_TUBE_LAYER_DEFAULT_MIN_PIECE_AREA)
+        self.trimmed_tube_min_piece_area_spin.valueChanged.connect(self.on_trimmed_tube_layer_setting_changed)
+        self.trimmed_tube_morph_steps_spin = QSpinBox()
+        self.trimmed_tube_morph_steps_spin.setRange(0, 24)
+        self.trimmed_tube_morph_steps_spin.setValue(self.TRIMMED_TUBE_LAYER_DEFAULT_MORPH_STEPS)
+        self.trimmed_tube_morph_steps_spin.valueChanged.connect(self.on_trimmed_tube_layer_setting_changed)
+        self.trimmed_tube_morph_shapes_spin = QSpinBox()
+        self.trimmed_tube_morph_shapes_spin.setRange(1, 16)
+        self.trimmed_tube_morph_shapes_spin.setValue(self.TRIMMED_TUBE_LAYER_DEFAULT_MORPH_SHAPES)
+        self.trimmed_tube_morph_shapes_spin.valueChanged.connect(self.on_trimmed_tube_layer_setting_changed)
+        self.trimmed_tube_morph_points_spin = QSpinBox()
+        self.trimmed_tube_morph_points_spin.setRange(8, 512)
+        self.trimmed_tube_morph_points_spin.setSingleStep(8)
+        self.trimmed_tube_morph_points_spin.setValue(self.TRIMMED_TUBE_LAYER_DEFAULT_MORPH_POINTS)
+        self.trimmed_tube_morph_points_spin.valueChanged.connect(self.on_trimmed_tube_layer_setting_changed)
+        trimmed_tube_form.addRow("Repetitions", self.trimmed_tube_repetitions_spin)
+        trimmed_tube_form.addRow("Outline Width", self.trimmed_tube_stroke_width_spin)
+        trimmed_tube_form.addRow("Straightness", self.trimmed_tube_straightness_spin)
+        trimmed_tube_form.addRow("Base Simplify", self.trimmed_tube_base_simplify_spin)
+        trimmed_tube_form.addRow("Ring Simplify", self.trimmed_tube_ring_simplify_spin)
+        trimmed_tube_form.addRow("Piece Min Area", self.trimmed_tube_min_piece_area_spin)
+        trimmed_tube_form.addRow("Morph Steps", self.trimmed_tube_morph_steps_spin)
+        trimmed_tube_form.addRow("Morph Shapes", self.trimmed_tube_morph_shapes_spin)
+        trimmed_tube_form.addRow("Morph Points", self.trimmed_tube_morph_points_spin)
+        self.layer_props_stack.addWidget(trimmed_tube_page)
         self.layer_props_stack.setCurrentIndex(0)
 
         self.preview_timer = QTimer(self)
@@ -202,6 +278,8 @@ class ArtUiWindow(QMainWindow):
         self.scatter_layer_count.valueChanged.connect(self.refresh_layer_stack)
         self.tube_enabled_checkbox.toggled.connect(self.refresh_layer_stack)
         self.tube_layer_count.valueChanged.connect(self.refresh_layer_stack)
+        self.trimmed_tube_enabled_checkbox.toggled.connect(self.refresh_layer_stack)
+        self.trimmed_tube_layer_count.valueChanged.connect(self.refresh_layer_stack)
         self.seed_input.valueChanged.connect(self.request_live_preview)
 
         self.output_dir_edit = QLineEdit(str(Path("output")))
@@ -244,6 +322,10 @@ class ArtUiWindow(QMainWindow):
         tube_row.addWidget(self.tube_enabled_checkbox)
         tube_row.addWidget(self.tube_layer_count)
         controls_layout.addRow("Tube Layers", tube_row)
+        trimmed_tube_row = QHBoxLayout()
+        trimmed_tube_row.addWidget(self.trimmed_tube_enabled_checkbox)
+        trimmed_tube_row.addWidget(self.trimmed_tube_layer_count)
+        controls_layout.addRow("Trimmed Morph Layers", trimmed_tube_row)
         controls_layout.addRow("Layer Stack", self.layer_stack_list)
         controls_layout.addRow("", self.rebuild_layers_button)
         controls_layout.addRow("Selected Layer", self.selected_layer_label)
@@ -426,6 +508,20 @@ class ArtUiWindow(QMainWindow):
             "tube_straightness": float(self.TUBE_LAYER_DEFAULT_STRAIGHTNESS),
         }
 
+    def _make_trimmed_tube_layer_data(self) -> dict[str, object]:
+        return {
+            "type": "trimmed_morph_tube",
+            "tube_segment_count": int(self.TRIMMED_TUBE_LAYER_DEFAULT_REPETITIONS),
+            "tube_stroke_width": float(self.TRIMMED_TUBE_LAYER_DEFAULT_STROKE_WIDTH),
+            "tube_straightness": float(self.TRIMMED_TUBE_LAYER_DEFAULT_STRAIGHTNESS),
+            "tube_base_simplify": float(self.TRIMMED_TUBE_LAYER_DEFAULT_BASE_SIMPLIFY),
+            "tube_ring_simplify": float(self.TRIMMED_TUBE_LAYER_DEFAULT_RING_SIMPLIFY),
+            "tube_piece_min_area": float(self.TRIMMED_TUBE_LAYER_DEFAULT_MIN_PIECE_AREA),
+            "tube_morph_steps": int(self.TRIMMED_TUBE_LAYER_DEFAULT_MORPH_STEPS),
+            "tube_morph_shapes": int(self.TRIMMED_TUBE_LAYER_DEFAULT_MORPH_SHAPES),
+            "tube_morph_points": int(self.TRIMMED_TUBE_LAYER_DEFAULT_MORPH_POINTS),
+        }
+
     def _make_tube_layer_data_with_repetitions(self, repetitions: int) -> dict[str, object]:
         data = self._make_tube_layer_data()
         data["tube_segment_count"] = max(1, min(400, int(repetitions)))
@@ -475,6 +571,17 @@ class ArtUiWindow(QMainWindow):
                 min_shapes, max_shapes = max_shapes, min_shapes
             item.setText(f"{position_label}: Scatter ({min_shapes}-{max_shapes} shapes)")
             return
+        if layer_type == "trimmed_morph_tube":
+            repetitions = int(data.get("tube_segment_count", self.TRIMMED_TUBE_LAYER_DEFAULT_REPETITIONS))
+            stroke_width = float(data.get("tube_stroke_width", self.TRIMMED_TUBE_LAYER_DEFAULT_STROKE_WIDTH))
+            straightness = float(data.get("tube_straightness", self.TRIMMED_TUBE_LAYER_DEFAULT_STRAIGHTNESS))
+            morph_steps = int(data.get("tube_morph_steps", self.TRIMMED_TUBE_LAYER_DEFAULT_MORPH_STEPS))
+            item.setText(
+                f"{position_label}: Trimmed Morph Tube (reps={repetitions}, stroke={stroke_width:.2f}, "
+                f"straight={straightness:.2f}, morph={morph_steps})"
+            )
+            return
+
         repetitions = int(data.get("tube_segment_count", self.TUBE_LAYER_DEFAULT_REPETITIONS))
         stroke_width = float(data.get("tube_stroke_width", self.TUBE_LAYER_DEFAULT_STROKE_WIDTH))
         straightness = float(data.get("tube_straightness", self.TUBE_LAYER_DEFAULT_STRAIGHTNESS))
@@ -512,6 +619,47 @@ class ArtUiWindow(QMainWindow):
             self.scatter_target_fill_spin.blockSignals(True)
             self.scatter_target_fill_spin.setValue(target_fill)
             self.scatter_target_fill_spin.blockSignals(False)
+            return
+
+        if layer_type == "trimmed_morph_tube":
+            repetitions = int(data.get("tube_segment_count", self.TRIMMED_TUBE_LAYER_DEFAULT_REPETITIONS))
+            stroke_width = float(data.get("tube_stroke_width", self.TRIMMED_TUBE_LAYER_DEFAULT_STROKE_WIDTH))
+            straightness = float(data.get("tube_straightness", self.TRIMMED_TUBE_LAYER_DEFAULT_STRAIGHTNESS))
+            base_simplify = float(data.get("tube_base_simplify", self.TRIMMED_TUBE_LAYER_DEFAULT_BASE_SIMPLIFY))
+            ring_simplify = float(data.get("tube_ring_simplify", self.TRIMMED_TUBE_LAYER_DEFAULT_RING_SIMPLIFY))
+            min_piece_area = float(data.get("tube_piece_min_area", self.TRIMMED_TUBE_LAYER_DEFAULT_MIN_PIECE_AREA))
+            morph_steps = int(data.get("tube_morph_steps", self.TRIMMED_TUBE_LAYER_DEFAULT_MORPH_STEPS))
+            morph_shapes = int(data.get("tube_morph_shapes", self.TRIMMED_TUBE_LAYER_DEFAULT_MORPH_SHAPES))
+            morph_points = int(data.get("tube_morph_points", self.TRIMMED_TUBE_LAYER_DEFAULT_MORPH_POINTS))
+            self.selected_layer_label.setText("Trimmed morph tube")
+            self.layer_props_stack.setCurrentIndex(3)
+            self.trimmed_tube_repetitions_spin.blockSignals(True)
+            self.trimmed_tube_repetitions_spin.setValue(repetitions)
+            self.trimmed_tube_repetitions_spin.blockSignals(False)
+            self.trimmed_tube_stroke_width_spin.blockSignals(True)
+            self.trimmed_tube_stroke_width_spin.setValue(stroke_width)
+            self.trimmed_tube_stroke_width_spin.blockSignals(False)
+            self.trimmed_tube_straightness_spin.blockSignals(True)
+            self.trimmed_tube_straightness_spin.setValue(straightness)
+            self.trimmed_tube_straightness_spin.blockSignals(False)
+            self.trimmed_tube_base_simplify_spin.blockSignals(True)
+            self.trimmed_tube_base_simplify_spin.setValue(base_simplify)
+            self.trimmed_tube_base_simplify_spin.blockSignals(False)
+            self.trimmed_tube_ring_simplify_spin.blockSignals(True)
+            self.trimmed_tube_ring_simplify_spin.setValue(ring_simplify)
+            self.trimmed_tube_ring_simplify_spin.blockSignals(False)
+            self.trimmed_tube_min_piece_area_spin.blockSignals(True)
+            self.trimmed_tube_min_piece_area_spin.setValue(min_piece_area)
+            self.trimmed_tube_min_piece_area_spin.blockSignals(False)
+            self.trimmed_tube_morph_steps_spin.blockSignals(True)
+            self.trimmed_tube_morph_steps_spin.setValue(morph_steps)
+            self.trimmed_tube_morph_steps_spin.blockSignals(False)
+            self.trimmed_tube_morph_shapes_spin.blockSignals(True)
+            self.trimmed_tube_morph_shapes_spin.setValue(morph_shapes)
+            self.trimmed_tube_morph_shapes_spin.blockSignals(False)
+            self.trimmed_tube_morph_points_spin.blockSignals(True)
+            self.trimmed_tube_morph_points_spin.setValue(morph_points)
+            self.trimmed_tube_morph_points_spin.blockSignals(False)
             return
 
         repetitions = int(data.get("tube_segment_count", self.TUBE_LAYER_DEFAULT_REPETITIONS))
@@ -572,6 +720,30 @@ class ArtUiWindow(QMainWindow):
         self._refresh_layer_stack_labels()
         self.request_live_preview()
 
+    def on_trimmed_tube_layer_setting_changed(self, _value) -> None:
+        item = self.layer_stack_list.currentItem()
+        if item is None:
+            return
+        data = item.data(Qt.UserRole)
+        if not isinstance(data, dict):
+            return
+        layer_type = str(data.get("type", "")).strip().lower()
+        if layer_type != "trimmed_morph_tube":
+            return
+        updated = dict(data)
+        updated["tube_segment_count"] = int(self.trimmed_tube_repetitions_spin.value())
+        updated["tube_stroke_width"] = float(self.trimmed_tube_stroke_width_spin.value())
+        updated["tube_straightness"] = float(self.trimmed_tube_straightness_spin.value())
+        updated["tube_base_simplify"] = float(self.trimmed_tube_base_simplify_spin.value())
+        updated["tube_ring_simplify"] = float(self.trimmed_tube_ring_simplify_spin.value())
+        updated["tube_piece_min_area"] = float(self.trimmed_tube_min_piece_area_spin.value())
+        updated["tube_morph_steps"] = int(self.trimmed_tube_morph_steps_spin.value())
+        updated["tube_morph_shapes"] = int(self.trimmed_tube_morph_shapes_spin.value())
+        updated["tube_morph_points"] = int(self.trimmed_tube_morph_points_spin.value())
+        item.setData(Qt.UserRole, updated)
+        self._refresh_layer_stack_labels()
+        self.request_live_preview()
+
     def on_layer_order_changed(self, *_args) -> None:
         self._refresh_layer_stack_labels()
         self.request_live_preview()
@@ -579,6 +751,7 @@ class ArtUiWindow(QMainWindow):
     def refresh_layer_stack(self, *_args) -> None:
         self.scatter_layer_count.setEnabled(self.scatter_enabled_checkbox.isChecked())
         self.tube_layer_count.setEnabled(self.tube_enabled_checkbox.isChecked())
+        self.trimmed_tube_layer_count.setEnabled(self.trimmed_tube_enabled_checkbox.isChecked())
 
         self.layer_stack_list.clear()
         if self.scatter_enabled_checkbox.isChecked():
@@ -590,6 +763,11 @@ class ArtUiWindow(QMainWindow):
             for idx in range(int(self.tube_layer_count.value())):
                 item = QListWidgetItem()
                 item.setData(Qt.UserRole, self._make_tube_layer_data())
+                self.layer_stack_list.addItem(item)
+        if self.trimmed_tube_enabled_checkbox.isChecked():
+            for idx in range(int(self.trimmed_tube_layer_count.value())):
+                item = QListWidgetItem()
+                item.setData(Qt.UserRole, self._make_trimmed_tube_layer_data())
                 self.layer_stack_list.addItem(item)
         self._refresh_layer_stack_labels()
         if self.layer_stack_list.count() > 0:
@@ -611,7 +789,7 @@ class ArtUiWindow(QMainWindow):
             if not isinstance(data, dict):
                 continue
             layer_type = str(data.get("type", "")).strip().lower()
-            if layer_type not in {"scatter", "segmented_tube"}:
+            if layer_type not in {"scatter", "segmented_tube", "trimmed_morph_tube"}:
                 continue
             spec: dict[str, object] = {"type": layer_type}
             if layer_type == "scatter":
@@ -624,13 +802,41 @@ class ArtUiWindow(QMainWindow):
                 spec["scatter_target_fill_ratio"] = float(
                     data.get("scatter_target_fill_ratio", self.SCATTER_LAYER_DEFAULT_TARGET_FILL_RATIO)
                 )
-            else:
+            elif layer_type == "segmented_tube":
                 spec["tube_segment_count"] = int(data.get("tube_segment_count", self.TUBE_LAYER_DEFAULT_REPETITIONS))
                 spec["tube_stroke_width"] = float(
                     data.get("tube_stroke_width", self.TUBE_LAYER_DEFAULT_STROKE_WIDTH)
                 )
                 spec["tube_straightness"] = float(
                     data.get("tube_straightness", self.TUBE_LAYER_DEFAULT_STRAIGHTNESS)
+                )
+            else:
+                spec["tube_segment_count"] = int(
+                    data.get("tube_segment_count", self.TRIMMED_TUBE_LAYER_DEFAULT_REPETITIONS)
+                )
+                spec["tube_stroke_width"] = float(
+                    data.get("tube_stroke_width", self.TRIMMED_TUBE_LAYER_DEFAULT_STROKE_WIDTH)
+                )
+                spec["tube_straightness"] = float(
+                    data.get("tube_straightness", self.TRIMMED_TUBE_LAYER_DEFAULT_STRAIGHTNESS)
+                )
+                spec["tube_base_simplify"] = float(
+                    data.get("tube_base_simplify", self.TRIMMED_TUBE_LAYER_DEFAULT_BASE_SIMPLIFY)
+                )
+                spec["tube_ring_simplify"] = float(
+                    data.get("tube_ring_simplify", self.TRIMMED_TUBE_LAYER_DEFAULT_RING_SIMPLIFY)
+                )
+                spec["tube_piece_min_area"] = float(
+                    data.get("tube_piece_min_area", self.TRIMMED_TUBE_LAYER_DEFAULT_MIN_PIECE_AREA)
+                )
+                spec["tube_morph_steps"] = int(
+                    data.get("tube_morph_steps", self.TRIMMED_TUBE_LAYER_DEFAULT_MORPH_STEPS)
+                )
+                spec["tube_morph_shapes"] = int(
+                    data.get("tube_morph_shapes", self.TRIMMED_TUBE_LAYER_DEFAULT_MORPH_SHAPES)
+                )
+                spec["tube_morph_points"] = int(
+                    data.get("tube_morph_points", self.TRIMMED_TUBE_LAYER_DEFAULT_MORPH_POINTS)
                 )
             layers.append(spec)
         return layers
@@ -677,6 +883,17 @@ class ArtUiWindow(QMainWindow):
                     low = int(layer.get("scatter_shape_count_min", self.SCATTER_LAYER_DEFAULT_MIN_SHAPES))
                     high = int(layer.get("scatter_shape_count_max", self.SCATTER_LAYER_DEFAULT_MAX_SHAPES))
                     layer_summary_parts.append(f"{idx + 1}:scatter({low}-{high})")
+                elif layer_type == "trimmed_morph_tube":
+                    reps = int(layer.get("tube_segment_count", self.TRIMMED_TUBE_LAYER_DEFAULT_REPETITIONS))
+                    stroke = float(layer.get("tube_stroke_width", self.TRIMMED_TUBE_LAYER_DEFAULT_STROKE_WIDTH))
+                    straight = float(layer.get("tube_straightness", self.TRIMMED_TUBE_LAYER_DEFAULT_STRAIGHTNESS))
+                    morph_steps = int(layer.get("tube_morph_steps", self.TRIMMED_TUBE_LAYER_DEFAULT_MORPH_STEPS))
+                    morph_shapes = int(layer.get("tube_morph_shapes", self.TRIMMED_TUBE_LAYER_DEFAULT_MORPH_SHAPES))
+                    layer_summary_parts.append(
+                        f"{idx + 1}:trimmed_morph_tube("
+                        f"reps={reps},stroke={stroke:.2f},straight={straight:.2f},"
+                        f"morph_steps={morph_steps},morph_shapes={morph_shapes})"
+                    )
                 else:
                     reps = int(layer.get("tube_segment_count", self.TUBE_LAYER_DEFAULT_REPETITIONS))
                     stroke = float(layer.get("tube_stroke_width", self.TUBE_LAYER_DEFAULT_STROKE_WIDTH))
