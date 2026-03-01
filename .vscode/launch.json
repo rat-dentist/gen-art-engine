@@ -1,0 +1,19 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug Project",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/main.py",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Debug 3D Sketch",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/main_3d.py",
+            "console": "integratedTerminal"
+        }
+    ]
+}
