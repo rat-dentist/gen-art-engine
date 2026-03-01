@@ -1,1 +1,6 @@
 numpy
+pillow
+opencv-python
+svgwrite
+cairosvg
+PySide6

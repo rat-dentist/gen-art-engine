@@ -1,5 +1,34 @@
 # Art Python Template
 
+## Desktop UI mode (PySide6)
+
+### Setup
+
+```powershell
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+### Run
+
+```powershell
+python src/ui_app.py
+```
+
+In VS Code, `Ctrl+Shift+B` now runs the default build task **Run Art UI**.
+
+UI flow:
+
+- Load a source image.
+- Quantize to 6 grayscale levels.
+- Extract tone-bucket contours.
+- Re-compose a seeded random subset (4-8 shapes) with varied scale, including large hero shapes.
+- Render on a white background (paper-like base).
+- Output preview is the primary canvas in the UI; input is shown as a small thumbnail.
+- Seed randomization is enabled by default (you can disable it for deterministic reruns).
+- Export `.svg` and `.png` to the selected output folder (default `output/`).
+
 ## Base mode
 
 ### Setup
