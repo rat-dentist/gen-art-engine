@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -113,6 +114,193 @@ class PipelineQuantizeVectorizeTests(unittest.TestCase):
             arrangement="scatter",
         )
         self.assertIn('fill="#ffffff"', svg)
+
+    def test_build_svg_segmented_tube_is_deterministic_and_repeats_one_shape(self) -> None:
+        shapes = []
+        for idx in range(6):
+            size = 4 + idx
+            x = idx * 5
+            contour = np.array([[[x, 0]], [[x + size, 0]], [[x + size, size]], [[x, size]]], dtype=np.int32)
+            shapes.append({"level": idx % 6, "contour": contour})
+
+        svg_a = build_svg(
+            shapes=shapes,
+            width=240,
+            height=160,
+            seed=99,
+            arrangement="segmented_tube",
+            tube_segment_count_range=(12, 16),
+        )
+        svg_b = build_svg(
+            shapes=shapes,
+            width=240,
+            height=160,
+            seed=99,
+            arrangement="segmented_tube",
+            tube_segment_count_range=(12, 16),
+        )
+        self.assertEqual(svg_a, svg_b)
+
+        emitted = svg_a.count("<path ")
+        self.assertGreaterEqual(emitted, 12)
+        self.assertLessEqual(emitted, 16)
+        unique_path_data = set(re.findall(r'<path d="([^"]+)"', svg_a))
+        self.assertEqual(len(unique_path_data), 1)
+        self.assertIn('fill="#ffffff"', svg_a)
+        self.assertIn('stroke="#000000"', svg_a)
+        self.assertIn('stroke-opacity="1"', svg_a)
+        self.assertIn("vector-effect=\"non-scaling-stroke\"", svg_a)
+        stroke_widths = [float(value) for value in re.findall(r'stroke-width="([0-9.]+)"', svg_a)]
+        self.assertGreater(len(stroke_widths), 0)
+        self.assertTrue(all(abs(width - 0.30) < 1e-6 for width in stroke_widths))
+
+    def test_build_svg_segmented_tube_keeps_segment_scale_large_enough(self) -> None:
+        tiny_contour = np.array([[[0, 0]], [[2, 0]], [[2, 2]], [[0, 2]]], dtype=np.int32)
+        svg = build_svg(
+            shapes=[{"level": 0, "contour": tiny_contour}],
+            width=300,
+            height=200,
+            seed=5,
+            arrangement="segmented_tube",
+            tube_segment_count_range=(8, 8),
+        )
+        scales = [float(value) for value in re.findall(r"scale\(([-0-9.]+)\)", svg)]
+        self.assertEqual(len(scales), 8)
+        self.assertGreaterEqual(min(scales), 6.0)
+
+    def test_build_svg_layer_sequence_supports_reordering_and_multiple_layers(self) -> None:
+        shapes = []
+        for idx in range(20):
+            x = (idx % 10) * 8
+            y = (idx // 10) * 8
+            contour = np.array([[[x, y]], [[x + 5, y]], [[x + 5, y + 5]], [[x, y + 5]]], dtype=np.int32)
+            shapes.append({"level": idx % 6, "contour": contour})
+
+        svg = build_svg(
+            shapes=shapes,
+            width=240,
+            height=160,
+            seed=222,
+            arrangement="scatter",
+            shape_count_range=(2, 2),
+            tube_segment_count_range=(3, 3),
+            layer_sequence=["segmented_tube", "scatter", "segmented_tube"],
+        )
+        self.assertEqual(svg.count("<path "), 8)
+        self.assertEqual(svg.count('stroke="none"'), 2)
+        self.assertEqual(svg.count('stroke="#000000"'), 6)
+        stroke_order = re.findall(r'<path [^>]*stroke="([^"]+)"', svg)
+        self.assertEqual(len(stroke_order), 8)
+        self.assertEqual(stroke_order[:3], ["#000000", "#000000", "#000000"])
+        self.assertEqual(stroke_order[3:5], ["none", "none"])
+        self.assertEqual(stroke_order[5:], ["#000000", "#000000", "#000000"])
+
+    def test_build_svg_layer_specs_control_tube_count_and_outline_width(self) -> None:
+        shapes = []
+        for idx in range(12):
+            x = (idx % 6) * 9
+            y = (idx // 6) * 9
+            contour = np.array([[[x, y]], [[x + 6, y]], [[x + 6, y + 6]], [[x, y + 6]]], dtype=np.int32)
+            shapes.append({"level": idx % 6, "contour": contour})
+
+        svg = build_svg(
+            shapes=shapes,
+            width=260,
+            height=180,
+            seed=314,
+            arrangement="scatter",
+            layer_specs=[
+                {"type": "segmented_tube", "tube_segment_count": 4, "tube_stroke_width": 0.35, "tube_straightness": 0.10},
+                {"type": "segmented_tube", "tube_segment_count": 2, "tube_stroke_width": 1.10, "tube_straightness": 0.95},
+            ],
+        )
+        self.assertEqual(svg.count("<path "), 6)
+        stroke_widths = re.findall(r'stroke-width="([0-9.]+)"', svg)
+        self.assertEqual(stroke_widths[:4], ["0.35", "0.35", "0.35", "0.35"])
+        self.assertEqual(stroke_widths[4:], ["1.10", "1.10"])
+
+    def test_build_svg_tube_repetitions_change_density_not_total_length(self) -> None:
+        contour = np.array([[[0, 0]], [[14, 0]], [[14, 10]], [[0, 10]]], dtype=np.int32)
+        shapes = [{"level": 2, "contour": contour}]
+
+        svg_low = build_svg(
+            shapes=shapes,
+            width=280,
+            height=180,
+            seed=44,
+            arrangement="segmented_tube",
+            layer_specs=[{"type": "segmented_tube", "tube_segment_count": 10, "tube_straightness": 0.55}],
+        )
+        svg_high = build_svg(
+            shapes=shapes,
+            width=280,
+            height=180,
+            seed=44,
+            arrangement="segmented_tube",
+            layer_specs=[{"type": "segmented_tube", "tube_segment_count": 40, "tube_straightness": 0.55}],
+        )
+
+        self.assertEqual(svg_low.count("<path "), 10)
+        self.assertEqual(svg_high.count("<path "), 40)
+
+        def path_length(svg_text: str) -> float:
+            points = [
+                (float(x), float(y))
+                for x, y in re.findall(r'translate\(([-0-9.]+) ([-0-9.]+)\)\s+rotate', svg_text)
+            ]
+            total = 0.0
+            for idx in range(1, len(points)):
+                dx = points[idx][0] - points[idx - 1][0]
+                dy = points[idx][1] - points[idx - 1][1]
+                total += (dx * dx + dy * dy) ** 0.5
+            return total
+
+        len_low = path_length(svg_low)
+        len_high = path_length(svg_high)
+        self.assertGreater(len_low, 0.0)
+        self.assertGreater(len_high, 0.0)
+        self.assertLess(abs(len_low - len_high), 12.0)
+
+    def test_build_svg_tube_starts_inside_canvas(self) -> None:
+        contour = np.array([[[0, 0]], [[12, 0]], [[12, 8]], [[0, 8]]], dtype=np.int32)
+        width = 260
+        height = 180
+        svg = build_svg(
+            shapes=[{"level": 1, "contour": contour}],
+            width=width,
+            height=height,
+            seed=88,
+            arrangement="segmented_tube",
+            layer_specs=[{"type": "segmented_tube", "tube_segment_count": 20, "tube_straightness": 0.4}],
+        )
+        points = re.findall(r'translate\(([-0-9.]+) ([-0-9.]+)\)\s+rotate', svg)
+        self.assertGreater(len(points), 0)
+        first_x, first_y = float(points[0][0]), float(points[0][1])
+        self.assertGreaterEqual(first_x, 0.0)
+        self.assertLessEqual(first_x, float(width))
+        self.assertGreaterEqual(first_y, 0.0)
+        self.assertLessEqual(first_y, float(height))
+
+    def test_build_svg_layer_specs_control_scatter_count_per_layer(self) -> None:
+        shapes = []
+        for idx in range(30):
+            x = (idx % 10) * 10
+            y = (idx // 10) * 10
+            contour = np.array([[[x, y]], [[x + 6, y]], [[x + 6, y + 6]], [[x, y + 6]]], dtype=np.int32)
+            shapes.append({"level": idx % 6, "contour": contour})
+
+        svg = build_svg(
+            shapes=shapes,
+            width=320,
+            height=220,
+            seed=17,
+            arrangement="scatter",
+            layer_specs=[
+                {"type": "scatter", "scatter_shape_count_min": 2, "scatter_shape_count_max": 2},
+                {"type": "scatter", "scatter_shape_count_min": 3, "scatter_shape_count_max": 3},
+            ],
+        )
+        self.assertEqual(svg.count("<path "), 5)
 
     def test_contours_by_level_finds_shape_in_synthetic_image(self) -> None:
         quantized = np.zeros((64, 64), dtype=np.uint8)

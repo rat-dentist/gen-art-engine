@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import random
 from pathlib import Path
 from typing import Iterable, TypedDict
@@ -13,6 +14,16 @@ class ShapeRecord(TypedDict):
     level: int
     contour: np.ndarray
     area: float
+
+
+class LayerSpec(TypedDict, total=False):
+    type: str
+    scatter_shape_count_min: int
+    scatter_shape_count_max: int
+    scatter_target_fill_ratio: float
+    tube_segment_count: int
+    tube_stroke_width: float
+    tube_straightness: float
 
 
 def _shape_area(shape: ShapeRecord) -> float:
@@ -209,6 +220,58 @@ def _scatter_transform(
     return source_cx, source_cy, target_cx, target_cy, angle, scale
 
 
+def _choose_tube_shape(shapes: list[ShapeRecord], rng: random.Random) -> ShapeRecord | None:
+    if not shapes:
+        return None
+    sorted_shapes = sorted(shapes, key=_shape_area, reverse=True)
+    candidate_count = max(1, min(len(sorted_shapes), max(3, len(sorted_shapes) // 3)))
+    pool = sorted_shapes[:candidate_count]
+    return pool[rng.randrange(len(pool))]
+
+
+def _tube_path_points(
+    rng: random.Random,
+    width: int,
+    height: int,
+    count: int,
+    step_length: float,
+    straightness: float = 0.45,
+) -> list[tuple[float, float]]:
+    x = rng.uniform(0.0, float(width))
+    y = rng.uniform(0.0, float(height))
+    heading = rng.uniform(0.0, 360.0)
+    straight = max(0.0, min(1.0, float(straightness)))
+    max_turn = 62.0 - (54.0 * straight)
+
+    points: list[tuple[float, float]] = [(x, y)]
+    for _ in range(max(1, int(count)) - 1):
+        heading += rng.uniform(-max_turn, max_turn)
+        step = float(step_length)
+        radians = math.radians(heading)
+        nx = x + (math.cos(radians) * step)
+        ny = y + (math.sin(radians) * step)
+
+        x, y = nx, ny
+        points.append((x, y))
+    return points
+
+
+def _tube_angle_degrees(points: list[tuple[float, float]], idx: int) -> float:
+    count = len(points)
+    if count <= 1:
+        return 0.0
+    if idx <= 0:
+        x0, y0 = points[0]
+        x1, y1 = points[1]
+    elif idx >= count - 1:
+        x0, y0 = points[count - 2]
+        x1, y1 = points[count - 1]
+    else:
+        x0, y0 = points[idx - 1]
+        x1, y1 = points[idx + 1]
+    return math.degrees(math.atan2(y1 - y0, x1 - x0))
+
+
 def _select_shapes(
     shapes: list[ShapeRecord],
     rng: random.Random,
@@ -315,6 +378,137 @@ def _shape_scales_for_varied_sizes(
     return scales
 
 
+def _append_scatter_layer(
+    lines: list[str],
+    shapes: list[ShapeRecord],
+    rng: random.Random,
+    width: int,
+    height: int,
+    level_count: int,
+    max_shapes: int | None,
+    shape_count_range: tuple[int, int] | None,
+    target_fill_ratio: float | None,
+) -> None:
+    if not shapes:
+        return
+    shape_limit = _resolve_shape_limit(
+        rng=rng,
+        available_count=len(shapes),
+        max_shapes=max_shapes,
+        shape_count_range=shape_count_range,
+    )
+    layer_shapes = _select_shapes(shapes, rng=rng, shape_limit=shape_limit)
+    layer_scales = _shape_scales_for_varied_sizes(
+        layer_shapes,
+        rng=rng,
+        width=width,
+        height=height,
+        target_fill_ratio=target_fill_ratio,
+    )
+
+    for idx, shape in enumerate(layer_shapes):
+        contour = shape["contour"]
+        level = int(shape["level"])
+        path_data = contour_to_svg_path(contour)
+        if not path_data:
+            continue
+        shape_scale = layer_scales[idx] if idx < len(layer_scales) else 1.0
+        src_cx, src_cy, dst_cx, dst_cy, angle, scale = _scatter_transform(
+            contour,
+            rng,
+            width,
+            height,
+            shape_scale=shape_scale,
+        )
+        transform = (
+            f"translate({dst_cx:.2f} {dst_cy:.2f}) "
+            f"rotate({angle:.2f}) "
+            f"scale({scale:.3f}) "
+            f"translate({-src_cx:.2f} {-src_cy:.2f})"
+        )
+        fill = _tone_fill(level, level_count)
+        lines.append(f'<path d="{path_data}" fill="{fill}" stroke="none" transform="{transform}" />')
+
+
+def _append_segmented_tube_layer(
+    lines: list[str],
+    shapes: list[ShapeRecord],
+    rng: random.Random,
+    width: int,
+    height: int,
+    tube_segment_count_range: tuple[int, int] | None,
+    tube_segment_count: int | None = None,
+    tube_stroke_width: float | None = None,
+    tube_straightness: float | None = None,
+) -> None:
+    tube_shape = _choose_tube_shape(shapes, rng=rng)
+    if tube_shape is None:
+        return
+    contour = tube_shape["contour"]
+    path_data = contour_to_svg_path(contour)
+    if not path_data:
+        return
+
+    x, y, w, h = cv2.boundingRect(contour)
+    src_cx = x + (w / 2.0)
+    src_cy = y + (h / 2.0)
+    base_major = max(1.0, float(max(w, h)))
+    min_canvas_dim = float(max(1, min(width, height)))
+    min_major = max(24.0, min_canvas_dim * 0.06)
+    target_major = min_canvas_dim * rng.uniform(0.10, 0.17)
+    min_scale = min_major / base_major
+    base_scale = max(min_scale, target_major / base_major)
+    base_scale = max(0.95, min(120.0, base_scale))
+
+    segment_major = base_major * base_scale
+    if tube_segment_count is not None:
+        segment_count = max(1, min(400, int(tube_segment_count)))
+    elif tube_segment_count_range is not None:
+        low, high = tube_segment_count_range
+        low = max(1, int(low))
+        high = max(1, int(high))
+        if low > high:
+            low, high = high, low
+        segment_count = rng.randint(low, high)
+    else:
+        estimated_step = max(segment_major * 0.70, min_major * 0.55)
+        auto_low = max(12, int(round((min_canvas_dim * 1.6) / max(1.0, estimated_step))))
+        auto_high = max(auto_low, int(round((min_canvas_dim * 2.9) / max(1.0, estimated_step))))
+        segment_count = rng.randint(auto_low, auto_high)
+    segment_count = max(1, min(400, int(segment_count)))
+
+    total_tube_length = max(segment_major * rng.uniform(16.0, 24.0), min_canvas_dim * 0.9)
+    step_length = max(0.2, total_tube_length / max(1, segment_count - 1))
+    points = _tube_path_points(
+        rng=rng,
+        width=width,
+        height=height,
+        count=segment_count,
+        step_length=step_length,
+        straightness=0.45 if tube_straightness is None else float(tube_straightness),
+    )
+    if tube_stroke_width is None:
+        stroke_width = 0.30
+    else:
+        stroke_width = max(0.10, min(12.0, float(tube_stroke_width)))
+    for idx, (dst_x, dst_y) in enumerate(points):
+        angle = _tube_angle_degrees(points, idx) + rng.uniform(-7.0, 7.0)
+        scale = max(min_scale, min(120.0, base_scale * rng.uniform(0.96, 1.05)))
+        transform = (
+            f"translate({dst_x:.2f} {dst_y:.2f}) "
+            f"rotate({angle:.2f}) "
+            f"scale({scale:.3f}) "
+            f"translate({-src_cx:.2f} {-src_cy:.2f})"
+        )
+        lines.append(
+            f'<path d="{path_data}" fill="#ffffff" fill-opacity="1" '
+            f'stroke="#000000" stroke-opacity="1" '
+            f'stroke-width="{stroke_width:.2f}" stroke-linejoin="round" stroke-linecap="round" '
+            f'paint-order="fill stroke" '
+            f'vector-effect="non-scaling-stroke" transform="{transform}" />'
+        )
+
+
 def build_svg(
     shapes: Iterable[ShapeRecord],
     width: int,
@@ -325,26 +519,68 @@ def build_svg(
     max_shapes: int | None = None,
     target_fill_ratio: float | None = None,
     shape_count_range: tuple[int, int] | None = None,
+    tube_segment_count_range: tuple[int, int] | None = None,
+    layer_sequence: Iterable[str] | None = None,
+    layer_specs: Iterable[LayerSpec] | None = None,
     white_background: bool = True,
 ) -> str:
-    shape_list = list(shapes)
-    max_level = max((int(shape["level"]) for shape in shape_list), default=0)
+    all_shapes = list(shapes)
+    max_level = max((int(shape["level"]) for shape in all_shapes), default=0)
     level_count = levels if levels is not None else (max_level + 1)
     rng = random.Random(seed)
-    shape_limit = _resolve_shape_limit(
-        rng=rng,
-        available_count=len(shape_list),
-        max_shapes=max_shapes,
-        shape_count_range=shape_count_range,
-    )
-    shape_list = _select_shapes(shape_list, rng=rng, shape_limit=shape_limit)
-    shape_scales = _shape_scales_for_varied_sizes(
-        shape_list,
-        rng=rng,
-        width=width,
-        height=height,
-        target_fill_ratio=target_fill_ratio,
-    )
+    if arrangement not in {"scatter", "segmented_tube", "scatter_segmented_tube"}:
+        raise ValueError(f"Unsupported arrangement: {arrangement}")
+
+    resolved_layer_specs: list[LayerSpec] = []
+    if layer_specs is not None:
+        for raw_spec in layer_specs:
+            raw_dict = dict(raw_spec)
+            layer = str(raw_dict.get("type", "")).strip().lower()
+            if not layer:
+                continue
+            if layer not in {"scatter", "segmented_tube"}:
+                raise ValueError(f"Unsupported layer type: {layer}")
+            resolved: LayerSpec = {"type": layer}
+            if layer == "scatter":
+                scatter_min_raw = raw_dict.get("scatter_shape_count_min")
+                scatter_max_raw = raw_dict.get("scatter_shape_count_max")
+                scatter_fill_raw = raw_dict.get("scatter_target_fill_ratio")
+                if scatter_min_raw is not None:
+                    resolved["scatter_shape_count_min"] = max(1, min(500, int(scatter_min_raw)))
+                if scatter_max_raw is not None:
+                    resolved["scatter_shape_count_max"] = max(1, min(500, int(scatter_max_raw)))
+                if scatter_fill_raw is not None:
+                    resolved["scatter_target_fill_ratio"] = max(0.05, min(0.95, float(scatter_fill_raw)))
+            else:
+                count_raw = raw_dict.get("tube_segment_count")
+                width_raw = raw_dict.get("tube_stroke_width")
+                straight_raw = raw_dict.get("tube_straightness")
+                if count_raw is not None:
+                    resolved["tube_segment_count"] = max(1, min(400, int(count_raw)))
+                if width_raw is not None:
+                    resolved["tube_stroke_width"] = max(0.10, min(12.0, float(width_raw)))
+                if straight_raw is not None:
+                    resolved["tube_straightness"] = max(0.0, min(1.0, float(straight_raw)))
+            resolved_layer_specs.append(resolved)
+
+    resolved_layers: list[str] = []
+    if not resolved_layer_specs and layer_sequence is not None:
+        for raw_layer in layer_sequence:
+            layer = str(raw_layer).strip().lower()
+            if not layer:
+                continue
+            if layer not in {"scatter", "segmented_tube"}:
+                raise ValueError(f"Unsupported layer type: {layer}")
+            resolved_layers.append(layer)
+    if not resolved_layer_specs and not resolved_layers:
+        if arrangement == "scatter":
+            resolved_layers = ["scatter"]
+        elif arrangement == "segmented_tube":
+            resolved_layers = ["segmented_tube"]
+        else:
+            resolved_layers = ["scatter", "segmented_tube"]
+    if not resolved_layer_specs:
+        resolved_layer_specs = [{"type": layer} for layer in resolved_layers]
 
     lines = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
@@ -358,36 +594,46 @@ def build_svg(
         lines.append(f'<rect x="0" y="0" width="{width}" height="{height}" fill="#ffffff" />')
     lines.append('<g clip-path="url(#canvas-clip)">')
 
-    for idx, shape in enumerate(shape_list):
-        contour = shape["contour"]
-        level = int(shape["level"])
-        path_data = contour_to_svg_path(contour)
-        if not path_data:
-            continue
-
-        if arrangement == "scatter":
-            shape_scale = shape_scales[idx] if idx < len(shape_scales) else 1.0
-            src_cx, src_cy, dst_cx, dst_cy, angle, scale = _scatter_transform(
-                contour,
-                rng,
-                width,
-                height,
-                shape_scale=shape_scale,
+    for layer_spec in resolved_layer_specs:
+        layer_type = str(layer_spec["type"])
+        if layer_type == "scatter":
+            scatter_shape_count_range = shape_count_range
+            scatter_min = layer_spec.get("scatter_shape_count_min")
+            scatter_max = layer_spec.get("scatter_shape_count_max")
+            if scatter_min is not None or scatter_max is not None:
+                low = int(scatter_min if scatter_min is not None else scatter_max if scatter_max is not None else 4)
+                high = int(scatter_max if scatter_max is not None else scatter_min if scatter_min is not None else low)
+                if low > high:
+                    low, high = high, low
+                scatter_shape_count_range = (low, high)
+            scatter_target_fill_ratio = (
+                float(layer_spec["scatter_target_fill_ratio"])
+                if "scatter_target_fill_ratio" in layer_spec
+                else target_fill_ratio
             )
-            transform = (
-                f"translate({dst_cx:.2f} {dst_cy:.2f}) "
-                f"rotate({angle:.2f}) "
-                f"scale({scale:.3f}) "
-                f"translate({-src_cx:.2f} {-src_cy:.2f})"
+            _append_scatter_layer(
+                lines=lines,
+                shapes=all_shapes,
+                rng=rng,
+                width=width,
+                height=height,
+                level_count=level_count,
+                max_shapes=max_shapes,
+                shape_count_range=scatter_shape_count_range,
+                target_fill_ratio=scatter_target_fill_ratio,
             )
         else:
-            transform = ""
-
-        fill = _tone_fill(level, level_count)
-        if transform:
-            lines.append(f'<path d="{path_data}" fill="{fill}" stroke="none" transform="{transform}" />')
-        else:
-            lines.append(f'<path d="{path_data}" fill="{fill}" stroke="none" />')
+            _append_segmented_tube_layer(
+                lines=lines,
+                shapes=all_shapes,
+                rng=rng,
+                width=width,
+                height=height,
+                tube_segment_count_range=tube_segment_count_range,
+                tube_segment_count=layer_spec.get("tube_segment_count"),
+                tube_stroke_width=layer_spec.get("tube_stroke_width"),
+                tube_straightness=layer_spec.get("tube_straightness"),
+            )
 
     lines.append("</g>")
     lines.append("</svg>")

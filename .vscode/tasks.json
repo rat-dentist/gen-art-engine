@@ -4,14 +4,17 @@
         {
             "label": "Run Art UI",
             "type": "shell",
-            "command": "powershell",
+            "command": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
             "args": [
                 "-NoProfile",
                 "-ExecutionPolicy",
                 "Bypass",
-                "-Command",
-                "if (Test-Path .venv\\Scripts\\python.exe) { & .venv\\Scripts\\python.exe src/ui_app.py } else { python src/ui_app.py }"
+                "-File",
+                "scripts/quick_run_ui.ps1"
             ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
             "group": {
                 "kind": "build",
                 "isDefault": true

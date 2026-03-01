@@ -24,6 +24,16 @@ UI flow:
 - Quantize to 6 grayscale levels.
 - Extract tone-bucket contours.
 - Re-compose a seeded random subset (4-8 shapes) with varied scale, including large hero shapes.
+- Toggle `Scatter` and `Segmented tube` layer types independently and set layer counts for each.
+- Drag layer items up/down in the layer stack to control over/under order (`Top` row draws on top).
+- Startup default stack is `Top tube (400 reps)`, `Middle scatter`, `Bottom tube (50 reps)`.
+- Each selected layer has its own properties panel.
+- Scatter layers: per-layer shape count range and target fill.
+- Tube layers: per-layer repetition count, outline thickness, and path straightness.
+- Tube repetition changes density while keeping tube length fixed for that generated layer.
+- Tube paths are allowed to run beyond the frame edges (they can be clipped by the canvas view).
+- Property edits update the output preview in real time.
+- Segmented tube layers render as white cutout shapes with black outlines.
 - Render on a white background (paper-like base).
 - Output preview is the primary canvas in the UI; input is shown as a small thumbnail.
 - Seed randomization is enabled by default (you can disable it for deterministic reruns).
