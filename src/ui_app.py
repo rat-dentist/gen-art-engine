@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import base64
+import io
 import time
 import traceback
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
 
+from PIL import Image, ImageFilter, ImageOps
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
@@ -66,6 +69,12 @@ class ArtUiWindow(QMainWindow):
     COMPOSE_WHITE_BACKGROUND = True
     PREVIEW_DPI = 192
     EXPORT_DPI = 192
+    PREVIEW_SCALE = 2.0
+    CANVAS_RATIO_WIDTH = 3
+    CANVAS_RATIO_HEIGHT = 4
+    BACKGROUND_BLUR_RADIUS = 1.2
+    BACKGROUND_IMAGE_OPACITY = 1.00
+    DEFAULT_SOURCE_IMAGE_DIR = Path(r"G:\My Drive\ART\_Source Imagery")
 
     def __init__(self) -> None:
         super().__init__()
@@ -96,6 +105,18 @@ class ArtUiWindow(QMainWindow):
         self.random_seed_checkbox.setChecked(True)
         self.random_seed_checkbox.toggled.connect(self.on_random_seed_toggled)
         self.seed_input.setEnabled(False)
+
+        self.canvas_ratio_checkbox = QCheckBox("Use 3:4 canvas")
+        self.canvas_ratio_checkbox.setChecked(True)
+        self.canvas_ratio_checkbox.toggled.connect(self.request_live_preview)
+
+        self.background_source_checkbox = QCheckBox("Use source image in background")
+        self.background_source_checkbox.setChecked(True)
+        self.background_source_checkbox.toggled.connect(self.on_background_source_toggled)
+
+        self.background_blur_checkbox = QCheckBox("Apply subtle Gaussian blur")
+        self.background_blur_checkbox.setChecked(True)
+        self.background_blur_checkbox.toggled.connect(self.request_live_preview)
 
         self.scatter_enabled_checkbox = QCheckBox("Enable scatter")
         self.scatter_enabled_checkbox.setChecked(True)
@@ -212,6 +233,9 @@ class ArtUiWindow(QMainWindow):
         controls_layout.addRow("Levels", self.levels_label)
         controls_layout.addRow("Seed", self.seed_input)
         controls_layout.addRow("", self.random_seed_checkbox)
+        controls_layout.addRow("Canvas", self.canvas_ratio_checkbox)
+        controls_layout.addRow("Background", self.background_source_checkbox)
+        controls_layout.addRow("", self.background_blur_checkbox)
         scatter_row = QHBoxLayout()
         scatter_row.addWidget(self.scatter_enabled_checkbox)
         scatter_row.addWidget(self.scatter_layer_count)
@@ -258,6 +282,7 @@ class ArtUiWindow(QMainWindow):
 
         self.refresh_layer_stack()
         self.apply_default_three_layer_preset()
+        self.on_background_source_toggled(self.background_source_checkbox.isChecked())
         self._log("Ready. Load an image to begin.")
 
     def _new_seed(self) -> int:
@@ -279,11 +304,7 @@ class ArtUiWindow(QMainWindow):
             return
         width = max(1, label.contentsRect().width())
         height = max(1, label.contentsRect().height())
-        if pixmap.width() > width or pixmap.height() > height:
-            mode = Qt.SmoothTransformation
-        else:
-            mode = Qt.FastTransformation
-        scaled = pixmap.scaled(width, height, Qt.KeepAspectRatio, mode)
+        scaled = pixmap.scaled(width, height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         label.setText("")
         label.setPixmap(scaled)
 
@@ -312,11 +333,16 @@ class ArtUiWindow(QMainWindow):
             self.seed_input.setValue(self._new_seed())
         self.request_live_preview()
 
+    def on_background_source_toggled(self, checked: bool) -> None:
+        self.background_blur_checkbox.setEnabled(checked)
+        self.request_live_preview()
+
     def on_load_image(self) -> None:
+        default_source_dir = self._default_source_image_dir()
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Load Source Image",
-            str(Path.cwd()),
+            default_source_dir,
             "Images (*.png *.jpg *.jpeg *.bmp *.webp *.tif *.tiff)",
         )
         if not file_path:
@@ -344,6 +370,45 @@ class ArtUiWindow(QMainWindow):
             self.seed_input.setValue(seed)
             return seed
         return int(self.seed_input.value())
+
+    def _default_source_image_dir(self) -> str:
+        if self.source_path is not None:
+            parent = self.source_path.parent
+            if parent.exists():
+                return str(parent)
+        if self.DEFAULT_SOURCE_IMAGE_DIR.exists():
+            return str(self.DEFAULT_SOURCE_IMAGE_DIR)
+        return str(Path.cwd())
+
+    def _canvas_size_for_source(self, source_width: int, source_height: int) -> tuple[int, int]:
+        width = max(1, int(source_width))
+        height = max(1, int(source_height))
+        if not self.canvas_ratio_checkbox.isChecked():
+            return width, height
+
+        target_ratio = self.CANVAS_RATIO_WIDTH / self.CANVAS_RATIO_HEIGHT
+        source_ratio = width / height
+        if source_ratio > target_ratio:
+            width = int(round(height * target_ratio))
+        else:
+            height = int(round(width / target_ratio))
+        return max(1, width), max(1, height)
+
+    def _prepare_canvas_image(self, source_image: Image.Image) -> Image.Image:
+        canvas_width, canvas_height = self._canvas_size_for_source(source_image.width, source_image.height)
+        if canvas_width == source_image.width and canvas_height == source_image.height:
+            return source_image.copy()
+        resample = Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.LANCZOS
+        return ImageOps.fit(source_image, (canvas_width, canvas_height), method=resample, centering=(0.5, 0.5))
+
+    def _build_background_image_data_url(self, canvas_image: Image.Image, blur_enabled: bool) -> str:
+        background_image = canvas_image.convert("L")
+        if blur_enabled:
+            background_image = background_image.filter(ImageFilter.GaussianBlur(radius=self.BACKGROUND_BLUR_RADIUS))
+        encoded_output = io.BytesIO()
+        background_image.save(encoded_output, format="PNG", optimize=True)
+        payload = base64.b64encode(encoded_output.getvalue()).decode("ascii")
+        return f"data:image/png;base64,{payload}"
 
     def _make_scatter_layer_data(self) -> dict[str, object]:
         return {
@@ -622,17 +687,24 @@ class ArtUiWindow(QMainWindow):
             self._log(
                 "Composition settings | "
                 f"layers={' > '.join(layer_summary_parts)} | "
-                f"white_background={self.COMPOSE_WHITE_BACKGROUND}"
+                f"white_background={self.COMPOSE_WHITE_BACKGROUND} | "
+                f"canvas_3_4={self.canvas_ratio_checkbox.isChecked()} | "
+                f"source_background={self.background_source_checkbox.isChecked()} | "
+                f"bg_blur={self.background_blur_checkbox.isChecked()}"
             )
         try:
             timings: dict[str, float] = {}
 
             t0 = perf_counter()
-            img = load_image(self.source_path)
+            source_img = load_image(self.source_path)
             timings["load_image"] = perf_counter() - t0
 
             t0 = perf_counter()
-            gray = to_grayscale(img)
+            canvas_img = self._prepare_canvas_image(source_img)
+            timings["prepare_canvas"] = perf_counter() - t0
+
+            t0 = perf_counter()
+            gray = to_grayscale(canvas_img)
             timings["to_grayscale"] = perf_counter() - t0
 
             t0 = perf_counter()
@@ -649,11 +721,20 @@ class ArtUiWindow(QMainWindow):
             )
             timings["contours"] = perf_counter() - t0
 
+            background_image_data_url: str | None = None
+            if self.background_source_checkbox.isChecked():
+                t0 = perf_counter()
+                background_image_data_url = self._build_background_image_data_url(
+                    canvas_image=canvas_img,
+                    blur_enabled=self.background_blur_checkbox.isChecked(),
+                )
+                timings["build_background"] = perf_counter() - t0
+
             t0 = perf_counter()
             svg_str = build_svg(
                 shapes=shapes,
-                width=img.width,
-                height=img.height,
+                width=canvas_img.width,
+                height=canvas_img.height,
                 seed=seed,
                 arrangement="scatter",
                 levels=self.LEVELS,
@@ -662,6 +743,8 @@ class ArtUiWindow(QMainWindow):
                 tube_segment_count_range=self.COMPOSE_TUBE_SEGMENT_COUNT_RANGE,
                 layer_specs=layer_specs,
                 white_background=self.COMPOSE_WHITE_BACKGROUND,
+                background_image_data_url=background_image_data_url,
+                background_image_opacity=self.BACKGROUND_IMAGE_OPACITY,
             )
             timings["build_svg"] = perf_counter() - t0
 
@@ -675,6 +758,7 @@ class ArtUiWindow(QMainWindow):
                 svg_str,
                 png_path if save_outputs else live_png_path,
                 dpi=self.EXPORT_DPI if save_outputs else self.PREVIEW_DPI,
+                scale=1.0 if save_outputs else self.PREVIEW_SCALE,
             )
             timings["svg_to_png"] = perf_counter() - t0
 

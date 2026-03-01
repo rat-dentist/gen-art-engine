@@ -115,6 +115,22 @@ class PipelineQuantizeVectorizeTests(unittest.TestCase):
         )
         self.assertIn('fill="#ffffff"', svg)
 
+    def test_build_svg_can_embed_background_image(self) -> None:
+        contour = np.array([[[0, 0]], [[10, 0]], [[10, 10]], [[0, 10]]], dtype=np.int32)
+        data_url = "data:image/png;base64,AAAA"
+        svg = build_svg(
+            shapes=[{"level": 0, "contour": contour}],
+            width=40,
+            height=40,
+            seed=2,
+            arrangement="scatter",
+            background_image_data_url=data_url,
+            background_image_opacity=0.35,
+        )
+        self.assertIn(f'href="{data_url}"', svg)
+        self.assertIn('preserveAspectRatio="xMidYMid slice"', svg)
+        self.assertIn('opacity="0.35"', svg)
+
     def test_build_svg_segmented_tube_is_deterministic_and_repeats_one_shape(self) -> None:
         shapes = []
         for idx in range(6):

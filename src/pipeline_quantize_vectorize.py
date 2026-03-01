@@ -523,6 +523,8 @@ def build_svg(
     layer_sequence: Iterable[str] | None = None,
     layer_specs: Iterable[LayerSpec] | None = None,
     white_background: bool = True,
+    background_image_data_url: str | None = None,
+    background_image_opacity: float = 1.0,
 ) -> str:
     all_shapes = list(shapes)
     max_level = max((int(shape["level"]) for shape in all_shapes), default=0)
@@ -593,6 +595,13 @@ def build_svg(
     if white_background:
         lines.append(f'<rect x="0" y="0" width="{width}" height="{height}" fill="#ffffff" />')
     lines.append('<g clip-path="url(#canvas-clip)">')
+    if background_image_data_url:
+        opacity = max(0.0, min(1.0, float(background_image_opacity)))
+        lines.append(
+            f'<image href="{background_image_data_url}" x="0" y="0" '
+            f'width="{width}" height="{height}" preserveAspectRatio="xMidYMid slice" '
+            f'opacity="{opacity:.2f}" />'
+        )
 
     for layer_spec in resolved_layer_specs:
         layer_type = str(layer_spec["type"])
@@ -640,7 +649,7 @@ def build_svg(
     return "\n".join(lines)
 
 
-def svg_to_png(svg_str: str, out_path_png: str | Path, dpi: int = 96) -> Path:
+def svg_to_png(svg_str: str, out_path_png: str | Path, dpi: int = 96, scale: float = 1.0) -> Path:
     try:
         import cairosvg
     except ModuleNotFoundError as exc:
@@ -648,5 +657,10 @@ def svg_to_png(svg_str: str, out_path_png: str | Path, dpi: int = 96) -> Path:
 
     out_path = Path(out_path_png)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    cairosvg.svg2png(bytestring=svg_str.encode("utf-8"), write_to=str(out_path), dpi=dpi)
+    cairosvg.svg2png(
+        bytestring=svg_str.encode("utf-8"),
+        write_to=str(out_path),
+        dpi=dpi,
+        scale=max(0.1, float(scale)),
+    )
     return out_path
