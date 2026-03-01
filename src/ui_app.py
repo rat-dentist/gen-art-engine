@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import io
+import json
+import re
 import time
 import traceback
 from datetime import datetime
@@ -9,7 +11,7 @@ from pathlib import Path
 from time import perf_counter
 
 from PIL import Image, ImageFilter, ImageOps
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QSettings, QTimer, Qt
 from PySide6.QtGui import QFontMetrics, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -89,11 +91,17 @@ class ArtUiWindow(QMainWindow):
     PREVIEW_MAX_PIXELS = 1_800_000
     GENERATE_MAX_DIM = 2600
     GENERATE_MAX_PIXELS = 5_200_000
+    PREVIEW_MIN_DIM = PREVIEW_MAX_DIM
+    GENERATE_MIN_DIM = GENERATE_MAX_DIM
     CANVAS_RATIO_WIDTH = 3
     CANVAS_RATIO_HEIGHT = 4
     BACKGROUND_BLUR_RADIUS = 1.2
     BACKGROUND_IMAGE_OPACITY = 1.00
     DEFAULT_SOURCE_IMAGE_DIR = Path(r"G:\My Drive\ART\_Source Imagery")
+    SETTINGS_ORG = "GenArtEngine"
+    SETTINGS_APP = "UiApp"
+    SETTINGS_VERSION = 1
+    PREVIEW_MIN_STROKE_WIDTH = 0.65
 
     def __init__(self) -> None:
         super().__init__()
@@ -105,6 +113,8 @@ class ArtUiWindow(QMainWindow):
         self._is_rendering = False
         self._pending_live_preview = False
         self._pending_generate = False
+        self._settings = QSettings(self.SETTINGS_ORG, self.SETTINGS_APP)
+        self._restoring_settings = True
 
         self.load_button = QPushButton("Load Image")
         self.load_button.clicked.connect(self.on_load_image)
@@ -332,6 +342,10 @@ class ArtUiWindow(QMainWindow):
         self.preview_timer.setSingleShot(True)
         self.preview_timer.setInterval(220)
         self.preview_timer.timeout.connect(self.on_live_preview_timeout)
+        self.settings_save_timer = QTimer(self)
+        self.settings_save_timer.setSingleShot(True)
+        self.settings_save_timer.setInterval(280)
+        self.settings_save_timer.timeout.connect(self._save_session_settings)
 
         self.scatter_enabled_checkbox.toggled.connect(self.refresh_layer_stack)
         self.scatter_layer_count.valueChanged.connect(self.refresh_layer_stack)
@@ -342,6 +356,7 @@ class ArtUiWindow(QMainWindow):
         self.seed_input.valueChanged.connect(self.request_live_preview)
 
         self.output_dir_edit = QLineEdit(str(Path("output")))
+        self.output_dir_edit.textChanged.connect(self.on_output_dir_text_changed)
         self.output_pick_button = QPushButton("Pick Output Folder")
         self.output_pick_button.clicked.connect(self.on_pick_output_folder)
 
@@ -432,11 +447,321 @@ class ArtUiWindow(QMainWindow):
 
         self.refresh_layer_stack()
         self.apply_default_three_layer_preset()
+        self._restore_session_settings()
+        self._restoring_settings = False
         self.on_background_source_toggled(self.background_source_checkbox.isChecked())
         self._log("Ready. Load an image to begin.")
+        if self.source_path is not None:
+            self._log(f"Restored previous source image: {self.source_path.name}")
+            self.request_live_preview()
 
     def _new_seed(self) -> int:
         return int(time.time_ns() % 2_147_483_647)
+
+    def _to_bool(self, value: object, default: bool) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            token = value.strip().lower()
+            if token in {"1", "true", "yes", "on"}:
+                return True
+            if token in {"0", "false", "no", "off"}:
+                return False
+        return bool(default)
+
+    def _to_int(self, value: object, default: int, low: int, high: int) -> int:
+        try:
+            parsed = int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            parsed = int(default)
+        return max(low, min(high, parsed))
+
+    def _to_float(self, value: object, default: float, low: float, high: float) -> float:
+        try:
+            parsed = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            parsed = float(default)
+        return max(low, min(high, parsed))
+
+    def _normalize_layer_data(self, raw: object) -> dict[str, object] | None:
+        if not isinstance(raw, dict):
+            return None
+        layer_type = str(raw.get("type", "")).strip().lower()
+        if layer_type == "scatter":
+            min_shapes = self._to_int(
+                raw.get("scatter_shape_count_min"),
+                self.SCATTER_LAYER_DEFAULT_MIN_SHAPES,
+                1,
+                500,
+            )
+            max_shapes = self._to_int(
+                raw.get("scatter_shape_count_max"),
+                self.SCATTER_LAYER_DEFAULT_MAX_SHAPES,
+                1,
+                500,
+            )
+            if min_shapes > max_shapes:
+                min_shapes, max_shapes = max_shapes, min_shapes
+            return {
+                "type": "scatter",
+                "scatter_shape_count_min": min_shapes,
+                "scatter_shape_count_max": max_shapes,
+                "scatter_target_fill_ratio": self._to_float(
+                    raw.get("scatter_target_fill_ratio"),
+                    self.SCATTER_LAYER_DEFAULT_TARGET_FILL_RATIO,
+                    0.05,
+                    0.95,
+                ),
+            }
+        if layer_type == "segmented_tube":
+            return {
+                "type": "segmented_tube",
+                "tube_segment_count": self._to_int(
+                    raw.get("tube_segment_count"),
+                    self.TUBE_LAYER_DEFAULT_REPETITIONS,
+                    1,
+                    self.TUBE_LAYER_MAX_REPETITIONS,
+                ),
+                "tube_stroke_width": self._to_float(
+                    raw.get("tube_stroke_width"),
+                    self.TUBE_LAYER_DEFAULT_STROKE_WIDTH,
+                    0.10,
+                    12.0,
+                ),
+                "tube_straightness": self._to_float(
+                    raw.get("tube_straightness"),
+                    self.TUBE_LAYER_DEFAULT_STRAIGHTNESS,
+                    0.0,
+                    1.0,
+                ),
+            }
+        if layer_type == "trimmed_morph_tube":
+            return {
+                "type": "trimmed_morph_tube",
+                "tube_segment_count": self._to_int(
+                    raw.get("tube_segment_count"),
+                    self.TRIMMED_TUBE_LAYER_DEFAULT_REPETITIONS,
+                    1,
+                    self.TUBE_LAYER_MAX_REPETITIONS,
+                ),
+                "tube_stroke_width": self._to_float(
+                    raw.get("tube_stroke_width"),
+                    self.TRIMMED_TUBE_LAYER_DEFAULT_STROKE_WIDTH,
+                    0.10,
+                    12.0,
+                ),
+                "tube_straightness": self._to_float(
+                    raw.get("tube_straightness"),
+                    self.TRIMMED_TUBE_LAYER_DEFAULT_STRAIGHTNESS,
+                    0.0,
+                    1.0,
+                ),
+                "tube_scale": self._to_float(
+                    raw.get("tube_scale"),
+                    self.TRIMMED_TUBE_LAYER_DEFAULT_SCALE,
+                    0.20,
+                    4.00,
+                ),
+                "tube_base_simplify": self._to_float(
+                    raw.get("tube_base_simplify"),
+                    self.TRIMMED_TUBE_LAYER_DEFAULT_BASE_SIMPLIFY,
+                    0.0,
+                    24.0,
+                ),
+                "tube_ring_simplify": self._to_float(
+                    raw.get("tube_ring_simplify"),
+                    self.TRIMMED_TUBE_LAYER_DEFAULT_RING_SIMPLIFY,
+                    0.0,
+                    24.0,
+                ),
+                "tube_piece_min_area": self._to_float(
+                    raw.get("tube_piece_min_area"),
+                    self.TRIMMED_TUBE_LAYER_DEFAULT_MIN_PIECE_AREA,
+                    1.0,
+                    5000.0,
+                ),
+                "tube_morph_steps": self._to_int(
+                    raw.get("tube_morph_steps"),
+                    self.TRIMMED_TUBE_LAYER_DEFAULT_MORPH_STEPS,
+                    0,
+                    24,
+                ),
+                "tube_morph_shapes": self._to_int(
+                    raw.get("tube_morph_shapes"),
+                    self.TRIMMED_TUBE_LAYER_DEFAULT_MORPH_SHAPES,
+                    1,
+                    16,
+                ),
+                "tube_morph_points": self._to_int(
+                    raw.get("tube_morph_points"),
+                    self.TRIMMED_TUBE_LAYER_DEFAULT_MORPH_POINTS,
+                    8,
+                    512,
+                ),
+            }
+        return None
+
+    def _layer_stack_snapshot(self) -> list[dict[str, object]]:
+        layers: list[dict[str, object]] = []
+        for idx in range(self.layer_stack_list.count()):
+            item = self.layer_stack_list.item(idx)
+            normalized = self._normalize_layer_data(item.data(Qt.UserRole))
+            if normalized is None:
+                continue
+            layers.append(normalized)
+        return layers
+
+    def _sync_layer_controls_with_stack(self, layers: list[dict[str, object]]) -> None:
+        counts = {"scatter": 0, "segmented_tube": 0, "trimmed_morph_tube": 0}
+        for layer in layers:
+            layer_type = str(layer.get("type", "")).strip().lower()
+            if layer_type in counts:
+                counts[layer_type] += 1
+
+        self.scatter_enabled_checkbox.blockSignals(True)
+        self.scatter_layer_count.blockSignals(True)
+        self.tube_enabled_checkbox.blockSignals(True)
+        self.tube_layer_count.blockSignals(True)
+        self.trimmed_tube_enabled_checkbox.blockSignals(True)
+        self.trimmed_tube_layer_count.blockSignals(True)
+        try:
+            scatter_count = int(counts["scatter"])
+            tube_count = int(counts["segmented_tube"])
+            trimmed_count = int(counts["trimmed_morph_tube"])
+
+            self.scatter_enabled_checkbox.setChecked(scatter_count > 0)
+            if scatter_count > 0:
+                self.scatter_layer_count.setValue(scatter_count)
+
+            self.tube_enabled_checkbox.setChecked(tube_count > 0)
+            if tube_count > 0:
+                self.tube_layer_count.setValue(tube_count)
+
+            self.trimmed_tube_enabled_checkbox.setChecked(trimmed_count > 0)
+            if trimmed_count > 0:
+                self.trimmed_tube_layer_count.setValue(trimmed_count)
+        finally:
+            self.scatter_enabled_checkbox.blockSignals(False)
+            self.scatter_layer_count.blockSignals(False)
+            self.tube_enabled_checkbox.blockSignals(False)
+            self.tube_layer_count.blockSignals(False)
+            self.trimmed_tube_enabled_checkbox.blockSignals(False)
+            self.trimmed_tube_layer_count.blockSignals(False)
+
+        self.scatter_layer_count.setEnabled(self.scatter_enabled_checkbox.isChecked())
+        self.tube_layer_count.setEnabled(self.tube_enabled_checkbox.isChecked())
+        self.trimmed_tube_layer_count.setEnabled(self.trimmed_tube_enabled_checkbox.isChecked())
+
+    def _apply_layer_stack_snapshot(self, raw_layers: object) -> bool:
+        if not isinstance(raw_layers, list):
+            return False
+        normalized_layers: list[dict[str, object]] = []
+        for raw in raw_layers:
+            normalized = self._normalize_layer_data(raw)
+            if normalized is None:
+                continue
+            normalized_layers.append(normalized)
+        if not normalized_layers:
+            return False
+
+        self.layer_stack_list.clear()
+        for layer in normalized_layers:
+            item = QListWidgetItem()
+            item.setData(Qt.UserRole, layer)
+            self.layer_stack_list.addItem(item)
+        self._sync_layer_controls_with_stack(normalized_layers)
+        self._refresh_layer_stack_labels()
+        self._clear_layer_selection()
+        return True
+
+    def _schedule_session_save(self) -> None:
+        if self._restoring_settings:
+            return
+        self.settings_save_timer.start()
+
+    def _save_session_settings(self) -> None:
+        if self._restoring_settings:
+            return
+        payload = {
+            "settings_version": int(self.SETTINGS_VERSION),
+            "source_path": str(self.source_path) if self.source_path is not None else "",
+            "output_dir": self.output_dir_edit.text().strip() or "output",
+            "seed": int(self.seed_input.value()),
+            "randomize_seed": bool(self.random_seed_checkbox.isChecked()),
+            "canvas_ratio": bool(self.canvas_ratio_checkbox.isChecked()),
+            "source_background": bool(self.background_source_checkbox.isChecked()),
+            "background_blur": bool(self.background_blur_checkbox.isChecked()),
+            "layer_stack": self._layer_stack_snapshot(),
+        }
+        try:
+            self._settings.setValue("session_state_json", json.dumps(payload))
+            self._settings.sync()
+        except Exception:
+            # Persistence should never interrupt composition or editing.
+            return
+
+    def _restore_session_settings(self) -> None:
+        raw_payload = self._settings.value("session_state_json", "")
+        if not raw_payload:
+            return
+        try:
+            payload = json.loads(str(raw_payload))
+        except (TypeError, ValueError):
+            return
+        if not isinstance(payload, dict):
+            return
+
+        randomize_seed = self._to_bool(payload.get("randomize_seed"), True)
+        seed_value = self._to_int(payload.get("seed"), self._new_seed(), 0, 2_147_483_647)
+
+        self.random_seed_checkbox.blockSignals(True)
+        self.seed_input.blockSignals(True)
+        self.canvas_ratio_checkbox.blockSignals(True)
+        self.background_source_checkbox.blockSignals(True)
+        self.background_blur_checkbox.blockSignals(True)
+        try:
+            self.random_seed_checkbox.setChecked(randomize_seed)
+            self.seed_input.setValue(seed_value)
+            self.seed_input.setEnabled(not randomize_seed)
+
+            self.canvas_ratio_checkbox.setChecked(
+                self._to_bool(payload.get("canvas_ratio"), self.canvas_ratio_checkbox.isChecked())
+            )
+            self.background_source_checkbox.setChecked(
+                self._to_bool(payload.get("source_background"), self.background_source_checkbox.isChecked())
+            )
+            self.background_blur_checkbox.setChecked(
+                self._to_bool(payload.get("background_blur"), self.background_blur_checkbox.isChecked())
+            )
+        finally:
+            self.random_seed_checkbox.blockSignals(False)
+            self.seed_input.blockSignals(False)
+            self.canvas_ratio_checkbox.blockSignals(False)
+            self.background_source_checkbox.blockSignals(False)
+            self.background_blur_checkbox.blockSignals(False)
+
+        output_dir = str(payload.get("output_dir", "")).strip()
+        if output_dir:
+            self.output_dir_edit.setText(output_dir)
+
+        restored_stack = self._apply_layer_stack_snapshot(payload.get("layer_stack"))
+        if not restored_stack:
+            self.apply_default_three_layer_preset()
+            self._sync_layer_controls_with_stack(self._layer_stack_snapshot())
+
+        source_path_text = str(payload.get("source_path", "")).strip()
+        if source_path_text:
+            source_candidate = Path(source_path_text)
+            if source_candidate.exists() and source_candidate.is_file():
+                self.source_path = source_candidate
+                self.source_label.setText(str(source_candidate))
+                self._set_source_preview(source_candidate)
+
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        self._save_session_settings()
+        super().closeEvent(event)
 
     def _create_preview_label(self, title: str, min_w: int, min_h: int) -> QLabel:
         label = QLabel(title)
@@ -454,9 +779,25 @@ class ArtUiWindow(QMainWindow):
             return
         width = max(1, label.contentsRect().width())
         height = max(1, label.contentsRect().height())
-        scaled = pixmap.scaled(width, height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        transform_mode = Qt.FastTransformation if label is self.output_preview else Qt.SmoothTransformation
+        scaled = pixmap.scaled(width, height, Qt.KeepAspectRatio, transform_mode)
         label.setText("")
         label.setPixmap(scaled)
+
+    def _preview_svg_with_sharper_strokes(self, svg_str: str) -> str:
+        min_width = float(self.PREVIEW_MIN_STROKE_WIDTH)
+        if min_width <= 0.0:
+            return svg_str
+
+        def replace_width(match: re.Match[str]) -> str:
+            raw_value = match.group(1)
+            try:
+                value = float(raw_value)
+            except ValueError:
+                return match.group(0)
+            return f'stroke-width="{max(min_width, value):.2f}"'
+
+        return re.sub(r'stroke-width="([0-9]+(?:\.[0-9]+)?)"', replace_width, svg_str)
 
     def _set_source_preview(self, image_path: Path) -> None:
         self._source_preview_path = image_path
@@ -515,10 +856,18 @@ class ArtUiWindow(QMainWindow):
             self._log(f"Output folder set: {folder}")
             self.request_live_preview()
 
+    def on_output_dir_text_changed(self, _value: str) -> None:
+        self._schedule_session_save()
+
     def _resolve_seed(self) -> int:
         if self.random_seed_checkbox.isChecked():
             seed = self._new_seed()
-            self.seed_input.setValue(seed)
+            # Prevent Generate from queuing a second live preview render via valueChanged.
+            self.seed_input.blockSignals(True)
+            try:
+                self.seed_input.setValue(seed)
+            finally:
+                self.seed_input.blockSignals(False)
             return seed
         return int(self.seed_input.value())
 
@@ -549,31 +898,44 @@ class ArtUiWindow(QMainWindow):
         self,
         width: int,
         height: int,
+        min_dim: int | None = None,
         max_dim: int | None = None,
         max_pixels: int | None = None,
     ) -> tuple[int, int]:
         w = max(1, int(width))
         h = max(1, int(height))
-        scale = 1.0
+        scale_up = 1.0
+
+        if min_dim is not None and min_dim > 0:
+            largest = max(w, h)
+            if largest < min_dim:
+                scale_up = max(scale_up, float(min_dim) / float(largest))
+
+        if scale_up > 1.0:
+            w = max(1, int(round(w * scale_up)))
+            h = max(1, int(round(h * scale_up)))
+
+        scale_down = 1.0
 
         if max_dim is not None and max_dim > 0:
             largest = max(w, h)
             if largest > max_dim:
-                scale = min(scale, float(max_dim) / float(largest))
+                scale_down = min(scale_down, float(max_dim) / float(largest))
 
         if max_pixels is not None and max_pixels > 0:
             pixels = float(w * h)
             if pixels > float(max_pixels):
-                scale = min(scale, (float(max_pixels) / pixels) ** 0.5)
+                scale_down = min(scale_down, (float(max_pixels) / pixels) ** 0.5)
 
-        if scale < 1.0:
-            w = max(1, int(round(w * scale)))
-            h = max(1, int(round(h * scale)))
+        if scale_down < 1.0:
+            w = max(1, int(round(w * scale_down)))
+            h = max(1, int(round(h * scale_down)))
         return w, h
 
     def _prepare_canvas_image(
         self,
         source_image: Image.Image,
+        min_dim: int | None = None,
         max_dim: int | None = None,
         max_pixels: int | None = None,
     ) -> Image.Image:
@@ -581,6 +943,7 @@ class ArtUiWindow(QMainWindow):
         target_width, target_height = self._limit_canvas_size(
             canvas_width,
             canvas_height,
+            min_dim=min_dim,
             max_dim=max_dim,
             max_pixels=max_pixels,
         )
@@ -986,6 +1349,7 @@ class ArtUiWindow(QMainWindow):
         return layers
 
     def request_live_preview(self) -> None:
+        self._schedule_session_save()
         if self.source_path is None:
             return
         if self._is_rendering:
@@ -1022,6 +1386,8 @@ class ArtUiWindow(QMainWindow):
             output_dir.mkdir(parents=True, exist_ok=True)
 
             seed = self._resolve_seed() if save_outputs else int(self.seed_input.value())
+            if save_outputs:
+                self._save_session_settings()
             layer_specs = self._current_layer_specs(for_render=True)
             if not layer_specs:
                 if save_outputs:
@@ -1080,11 +1446,13 @@ class ArtUiWindow(QMainWindow):
             timings["load_image"] = perf_counter() - t0
 
             requested_width, requested_height = self._canvas_size_for_source(source_img.width, source_img.height)
+            min_dim = self.GENERATE_MIN_DIM if save_outputs else self.PREVIEW_MIN_DIM
             max_dim = self.GENERATE_MAX_DIM if save_outputs else self.PREVIEW_MAX_DIM
             max_pixels = self.GENERATE_MAX_PIXELS if save_outputs else self.PREVIEW_MAX_PIXELS
             limited_width, limited_height = self._limit_canvas_size(
                 requested_width,
                 requested_height,
+                min_dim=min_dim,
                 max_dim=max_dim,
                 max_pixels=max_pixels,
             )
@@ -1092,13 +1460,14 @@ class ArtUiWindow(QMainWindow):
             t0 = perf_counter()
             canvas_img = self._prepare_canvas_image(
                 source_img,
+                min_dim=min_dim,
                 max_dim=max_dim,
                 max_pixels=max_pixels,
             )
             timings["prepare_canvas"] = perf_counter() - t0
             if save_outputs and (limited_width != requested_width or limited_height != requested_height):
                 self._log(
-                    f"Canvas capped for stability: {requested_width}x{requested_height} -> "
+                    f"Canvas normalized for detail/stability: {requested_width}x{requested_height} -> "
                     f"{limited_width}x{limited_height}"
                 )
 
@@ -1153,8 +1522,9 @@ class ArtUiWindow(QMainWindow):
                 timings["write_svg"] = perf_counter() - t0
 
             t0 = perf_counter()
+            png_svg = svg_str if save_outputs else self._preview_svg_with_sharper_strokes(svg_str)
             svg_to_png(
-                svg_str,
+                png_svg,
                 png_path if save_outputs else live_png_path,
                 dpi=self.EXPORT_DPI if save_outputs else self.PREVIEW_DPI,
                 scale=1.0 if save_outputs else self.PREVIEW_SCALE,

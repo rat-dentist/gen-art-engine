@@ -301,10 +301,13 @@ def generate_segmented_tube_contours(
     min_canvas_dim = float(max(1, min(width, height)))
     min_major = max(24.0, min_canvas_dim * 0.06)
     target_major = min_canvas_dim * rng.uniform(0.10, 0.17)
-    min_scale = min_major / representative_major
+    resolved_scale_multiplier = max(0.20, min(4.00, float(scale_multiplier)))
+    # Allow true shrink behavior for scale multipliers below 1.0.
+    scaled_min_major = min_major * min(1.0, resolved_scale_multiplier)
+    min_scale = scaled_min_major / representative_major
     base_scale = max(min_scale, target_major / representative_major)
-    base_scale *= max(0.20, min(4.00, float(scale_multiplier)))
-    base_scale = max(0.95, min(120.0, base_scale))
+    base_scale *= resolved_scale_multiplier
+    base_scale = max(min_scale, min(120.0, base_scale))
 
     segment_major = representative_major * base_scale
     total_tube_length = max(segment_major * rng.uniform(16.0, 24.0), min_canvas_dim * 0.9)
@@ -325,7 +328,7 @@ def generate_segmented_tube_contours(
         source_cx = x + (w / 2.0)
         source_cy = y + (h / 2.0)
         contour_major = max(1.0, float(max(w, h)))
-        min_scale_for_contour = min_major / contour_major
+        min_scale_for_contour = scaled_min_major / contour_major
         contour_scale_bias = representative_major / contour_major
         angle = _tube_angle_degrees(points, idx) + rng.uniform(-7.0, 7.0)
         scale = base_scale * contour_scale_bias * rng.uniform(0.96, 1.05)
